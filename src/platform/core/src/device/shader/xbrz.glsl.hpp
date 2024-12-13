@@ -52,9 +52,9 @@ constexpr auto xbrz0_frag = R"(
 
   in vec2 v_uv;
 
-  uniform sampler2D u_source_map;
+  uniform sampler2D u_input_map;
 
-  #define u_source_size vec4(240.0, 160.0, 1.0/240.0, 1.0/160.0)
+  #define u_input_size vec4(240.0, 160.0, 1.0/240.0, 1.0/160.0)
 
   #define BLEND_NONE 0
   #define BLEND_NORMAL 1
@@ -98,7 +98,7 @@ constexpr auto xbrz0_frag = R"(
   #define eq(a,b)  (a == b)
   #define neq(a,b) (a != b)
 
-  #define P(x,y) texture(u_source_map, coord + u_source_size.zw * vec2(x, y)).rgb
+  #define P(x,y) texture(u_input_map, coord + u_input_size.zw * vec2(x, y)).rgb
 
 void main() {
   //---------------------------------------
@@ -108,8 +108,8 @@ void main() {
   //                       x|G|H|I|x
   //                       -|x|x|x|-
 
-  vec2 pos = fract(v_uv * u_source_size.xy) - vec2(0.5, 0.5);
-  vec2 coord = v_uv - pos * u_source_size.zw;
+  vec2 pos = fract(v_uv * u_input_size.xy) - vec2(0.5, 0.5);
+  vec2 coord = v_uv - pos * u_input_size.zw;
 
   vec3 A = P(-1,-1);
   vec3 B = P( 0,-1);
@@ -131,7 +131,7 @@ void main() {
   //                    -|D|E|F|x
   //                    -|G|H|I|x
   //                    -|-|x|x|-
-  if (!((eq(E,F) && eq(H,I)) || (eq(E,H) && eq(F,I))))
+  if(!((eq(E,F) && eq(H,I)) || (eq(E,H) && eq(F,I))))
   {
     float dist_H_F = DistYCbCr(G, E) + DistYCbCr(E, C) + DistYCbCr(P(0,2), I) + DistYCbCr(I, P(2,0)) + (4.0 * DistYCbCr(H, F));
     float dist_E_I = DistYCbCr(D, H) + DistYCbCr(H, P(1,2)) + DistYCbCr(B, F) + DistYCbCr(F, P(2,1)) + (4.0 * DistYCbCr(E, I));
@@ -145,7 +145,7 @@ void main() {
   //                    x|D|E|F|-
   //                    x|G|H|I|-
   //                    -|x|x|-|-
-  if (!((eq(D,E) && eq(G,H)) || (eq(D,G) && eq(E,H))))
+  if(!((eq(D,E) && eq(G,H)) || (eq(D,G) && eq(E,H))))
   {
     float dist_G_E = DistYCbCr(P(-2,1)  , D) + DistYCbCr(D, B) + DistYCbCr(P(-1,2), H) + DistYCbCr(H, F) + (4.0 * DistYCbCr(G, E));
     float dist_D_H = DistYCbCr(P(-2,0)  , G) + DistYCbCr(G, P(0,2)) + DistYCbCr(A, E) + DistYCbCr(E, I) + (4.0 * DistYCbCr(D, H));
@@ -158,7 +158,7 @@ void main() {
   //                    -|D|E|F|x
   //                    -|-|H|I|-
   //                    -|-|-|-|-
-  if (!((eq(B,C) && eq(E,F)) || (eq(B,E) && eq(C,F))))
+  if(!((eq(B,C) && eq(E,F)) || (eq(B,E) && eq(C,F))))
   {
     float dist_E_C = DistYCbCr(D, B) + DistYCbCr(B, P(1,-2)) + DistYCbCr(H, F) + DistYCbCr(F, P(2,-1)) + (4.0 * DistYCbCr(E, C));
     float dist_B_F = DistYCbCr(A, E) + DistYCbCr(E, I) + DistYCbCr(P(0,-2), C) + DistYCbCr(C, P(2,0)) + (4.0 * DistYCbCr(B, F));
@@ -171,7 +171,7 @@ void main() {
   //                    x|D|E|F|-
   //                    -|G|H|-|-
   //                    -|-|-|-|-
-  if (!((eq(A,B) && eq(D,E)) || (eq(A,D) && eq(B,E))))
+  if(!((eq(A,B) && eq(D,E)) || (eq(A,D) && eq(B,E))))
   {
     float dist_D_B = DistYCbCr(P(-2,0), A) + DistYCbCr(A, P(0,-2)) + DistYCbCr(G, E) + DistYCbCr(E, C) + (4.0 * DistYCbCr(D, B));
     float dist_A_E = DistYCbCr(P(-2,-1), D) + DistYCbCr(D, H) + DistYCbCr(P(-1,-2), B) + DistYCbCr(B, F) + (4.0 * DistYCbCr(A, E));
@@ -268,24 +268,7 @@ frag_color /= 255.0;
 }
 )";
 
-constexpr auto xbrz1_vert = R"(
-  #version 330 core
-
-  layout(location = 0) in vec2 position;
-  layout(location = 1) in vec2 uv;
-
-  out vec2 v_uv;
-  out vec4 u_screen_size;
-
-  uniform sampler2D u_screen_map;
-
-  void main() {
-    v_uv = uv;
-    u_screen_size.xy = textureSize(u_screen_map, 0);
-    u_screen_size.zw = 1.0 / textureSize(u_screen_map, 0);
-    gl_Position = vec4(position, 0.0, 1.0);
-  }
-)";
+constexpr auto xbrz1_vert = common_flip_vert;
 
 constexpr auto xbrz1_frag = R"(
   #version 330 core
@@ -293,12 +276,12 @@ constexpr auto xbrz1_frag = R"(
   layout(location = 0) out vec4 frag_color;
 
   in vec2 v_uv;
-  in vec4 u_screen_size;
 
-  uniform sampler2D u_screen_map; // info texture
-  uniform sampler2D u_source_map; // LCD texture
+  uniform sampler2D u_input_map; // LCD texture
+  uniform sampler2D u_info_map; // info texture
+  uniform vec2 u_output_size;
 
-  #define u_source_size vec4(240.0, 160.0, 1.0/240.0, 1.0/160.0)
+  #define u_input_size vec4(240.0, 160.0, 1.0/240.0, 1.0/160.0)
 
   #define BLEND_NONE 0
   #define BLEND_NORMAL 1
@@ -342,7 +325,7 @@ constexpr auto xbrz1_frag = R"(
   #define eq(a,b)  (a == b)
   #define neq(a,b) (a != b)
 
-  #define P(x,y) texture(u_source_map, coord + u_source_size.zw * vec2(x, y)).rgb
+  #define P(x,y) texture(u_input_map, coord + u_input_size.zw * vec2(x, y)).rgb
 
   void main() {
    //---------------------------------------
@@ -350,9 +333,9 @@ constexpr auto xbrz1_frag = R"(
     //                      D|E|F
     //                      -|H|-
 
-    vec2 scale = u_screen_size.xy * u_source_size.zw;
-    vec2 pos = fract(v_uv * u_source_size.xy) - vec2(0.5, 0.5);
-    vec2 coord = v_uv - pos * u_source_size.zw;
+    vec2 scale = u_output_size.xy * u_input_size.zw;
+    vec2 pos = fract(v_uv * u_input_size.xy) - vec2(0.5, 0.5);
+    vec2 coord = v_uv - pos * u_input_size.zw;
 
     vec3 B = P( 0,-1);
     vec3 D = P(-1, 0);
@@ -360,7 +343,7 @@ constexpr auto xbrz1_frag = R"(
     vec3 F = P( 1, 0);
     vec3 H = P( 0, 1);
 
-    vec4 info = floor(texture(u_screen_map, coord) * 255.0 + 0.5);
+    vec4 info = floor(texture(u_info_map, coord) * 255.0 + 0.5);
 
     // info Mapping: x|y|
     //               w|z|

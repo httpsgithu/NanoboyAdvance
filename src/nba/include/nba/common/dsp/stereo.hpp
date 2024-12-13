@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -24,8 +24,8 @@ struct StereoSample {
   }
   
   T& operator[](int index) {
-    if (index == 0) return left;
-    if (index == 1) return right;
+    if(index == 0) return left;
+    if(index == 1) return right;
     
     throw std::runtime_error("StereoSample<T>: bad index for operator[].");
   }

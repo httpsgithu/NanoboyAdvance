@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -16,8 +16,7 @@
 #include <nba/log.hpp>
 #include <string_view>
 #include <utility>
-
-namespace fs = std::filesystem;
+#include <unarr.h>
 
 namespace nba {
 
@@ -27,66 +26,69 @@ static constexpr size_t kMaxROMSize = 32 * 1024 * 1024; // 32 MiB
 
 auto ROMLoader::Load(
   std::unique_ptr<CoreBase>& core,
-  std::string path,
+  fs::path const& path,
   Config::BackupType backup_type,
-  bool force_rtc
+  GPIODeviceType force_gpio
 ) -> Result {
-  auto save_path = path.substr(0, path.find_last_of(".")) + ".sav";
+  const auto save_path = fs::path{path}.replace_extension(".sav");
 
-  return Load(core, path, save_path, backup_type, force_rtc);
+  return Load(core, path, save_path, backup_type, force_gpio);
 }
 
 auto ROMLoader::Load(
   std::unique_ptr<CoreBase>& core,
-  std::string rom_path,
-  std::string save_path,
+  fs::path const& rom_path,
+  fs::path const& save_path,
   BackupType backup_type,
-  bool force_rtc
+  GPIODeviceType force_gpio
 ) -> Result {
-  if (!fs::exists(rom_path)) {
-    return Result::CannotFindFile;
+  auto file_data = std::vector<u8>{};
+  auto read_status = ReadFile(rom_path, file_data);
+
+  if(read_status != Result::Success) {
+    return read_status;
   }
 
-  if (fs::is_directory(rom_path)) {
-    return Result::CannotOpenFile;
-  }
-
-  auto size = fs::file_size(rom_path);
-  if (size < sizeof(Header) || size > kMaxROMSize) {
+  auto size = file_data.size();
+  
+  if(size < sizeof(Header) || size > kMaxROMSize) {
     return Result::BadImage;
   }
 
-  auto file_stream = std::ifstream{rom_path, std::ios::binary};
-  auto file_data = std::vector<u8>{};
-  if (!file_stream.good()) {
-    return Result::CannotOpenFile;
-  }
-  file_data.resize(size);
-  file_stream.read((char*)file_data.data(), size);
-
   auto game_info = GetGameInfo(file_data);
 
-  if (backup_type == BackupType::Detect) {
-    if (game_info.backup_type != BackupType::Detect) {
+  if(backup_type == BackupType::Detect) {
+    if(game_info.backup_type != BackupType::Detect) {
       backup_type = game_info.backup_type;
     } else {
       backup_type = GetBackupType(file_data);
-      if (backup_type == BackupType::Detect) {
+      if(backup_type == BackupType::Detect) {
         Log<Warn>("ROMLoader: failed to detect backup type!");
         backup_type = BackupType::SRAM;
       }
     }
   }
 
-  auto backup = CreateBackup(save_path, backup_type);
+  auto backup = CreateBackup(core, save_path, backup_type);
 
   auto gpio = std::unique_ptr<GPIO>{};
-  if (game_info.gpio == GPIODeviceType::RTC || force_rtc) {
-    gpio = core->CreateRTC();
+
+  auto gpio_devices = game_info.gpio | force_gpio;
+
+  if(gpio_devices != GPIODeviceType::None) {
+    gpio = std::make_unique<GPIO>();
+
+    if(gpio_devices & GPIODeviceType::RTC) {
+      gpio->Attach(core->CreateRTC());
+    }
+
+    if(gpio_devices & GPIODeviceType::SolarSensor) {
+      gpio->Attach(core->CreateSolarSensor());
+    }
   }
 
   u32 rom_mask = u32(kMaxROMSize - 1);
-  if (game_info.mirror) {
+  if(game_info.mirror) {
     rom_mask = u32(RoundSizeToPowerOfTwo(size) - 1);
   }
 
@@ -99,6 +101,76 @@ auto ROMLoader::Load(
   return Result::Success;
 }
 
+auto ROMLoader::ReadFile(fs::path const& path, std::vector<u8>& file_data) -> Result {
+  if(!fs::exists(path)) {
+    return Result::CannotFindFile;
+  }
+
+  if(fs::is_directory(path)) {
+    return Result::CannotOpenFile;
+  }
+
+  auto archive_result = ReadFileFromArchive(path, file_data);
+
+  /* Forward result form ReadFileFromArchive() if the archive could be loaded,
+   * and the GBA file was found and loaded or there was no GBA file.
+   */
+  if(archive_result == Result::BadImage ||
+      archive_result == Result::Success) {
+    return archive_result;
+  }
+
+  auto file_stream = std::ifstream{path, std::ios::binary};
+
+  if(!file_stream.good()) {
+    return Result::CannotOpenFile;
+  }
+
+  auto file_size = fs::file_size(path);
+
+  file_data.resize(file_size);
+  file_stream.read((char*)file_data.data(), file_size);
+  return Result::Success;
+}
+
+auto ROMLoader::ReadFileFromArchive(fs::path const& path, std::vector<u8>& file_data) -> Result {
+  auto stream = ar_open_file(path.u8string().c_str());
+
+  if(!stream) {
+    return Result::CannotOpenFile;
+  }
+
+  ar_archive* archive = ar_open_zip_archive(stream, false);
+
+  if(!archive) archive = ar_open_rar_archive(stream);
+  if(!archive) archive = ar_open_7z_archive(stream);
+  if(!archive) archive = ar_open_tar_archive(stream);
+
+  if(!archive) {
+    ar_close(stream);
+    return Result::CannotOpenFile;
+  }
+
+  auto result = Result::BadImage;
+
+  while(ar_parse_entry(archive)) {
+    auto filename = ar_entry_get_name(archive);
+    auto extension = fs::path{filename}.extension();
+
+    if(extension == ".gba" || extension == ".GBA") {
+      auto size = ar_entry_get_size(archive);
+      file_data.resize(size);
+      ar_entry_uncompress(archive, file_data.data(), size);
+      result = Result::Success;
+      break;
+    }
+  }
+
+  ar_close_archive(archive);
+  ar_close(stream);
+  return result;
+}
+
 auto ROMLoader::GetGameInfo(
   std::vector<u8>& file_data
 ) -> GameInfo {
@@ -107,7 +179,7 @@ auto ROMLoader::GetGameInfo(
   game_code.assign(header->game.code, 4);
 
   auto db_entry = g_game_db.find(game_code);
-  if (db_entry != g_game_db.end()) {
+  if(db_entry != g_game_db.end()) {
     return db_entry->second;
   }
 
@@ -118,19 +190,19 @@ auto ROMLoader::GetBackupType(
   std::vector<u8>& file_data
 ) -> BackupType {
   static constexpr std::pair<std::string_view, BackupType> signatures[6] {
-    { "EEPROM_V",   BackupType::EEPROM_64 },
-    { "SRAM_V",     BackupType::SRAM      },
-    { "SRAM_F_V",   BackupType::SRAM      },
-    { "FLASH_V",    BackupType::FLASH_64  },
-    { "FLASH512_V", BackupType::FLASH_64  },
+    { "EEPROM_V",   BackupType::EEPROM_DETECT },
+    { "SRAM_V",     BackupType::SRAM },
+    { "SRAM_F_V",   BackupType::SRAM },
+    { "FLASH_V",    BackupType::FLASH_64 },
+    { "FLASH512_V", BackupType::FLASH_64 },
     { "FLASH1M_V",  BackupType::FLASH_128 }
   };
 
   const auto size = file_data.size();
 
-  for (int i = 0; i < size; i += sizeof(u32)) {
-    for (auto const& [signature, type] : signatures) {
-      if ((i + signature.size()) <= size &&
+  for(int i = 0; i < size; i += sizeof(u32)) {
+    for(auto const& [signature, type] : signatures) {
+      if((i + signature.size()) <= size &&
           std::memcmp(&file_data[i], signature.data(), signature.size()) == 0) {
         return type;
       }
@@ -141,25 +213,17 @@ auto ROMLoader::GetBackupType(
 }
 
 auto ROMLoader::CreateBackup(
-  std::string save_path,
+  std::unique_ptr<CoreBase>& core,
+  fs::path const& save_path,
   BackupType backup_type
 ) -> std::unique_ptr<Backup> {
-  switch (backup_type) {
-    case BackupType::SRAM: {
-      return std::make_unique<SRAM>(save_path);
-    }
-    case BackupType::FLASH_64: {
-      return std::make_unique<FLASH>(save_path, FLASH::SIZE_64K);
-    }
-    case BackupType::FLASH_128: {
-      return std::make_unique<FLASH>(save_path, FLASH::SIZE_128K);
-    }
-    case BackupType::EEPROM_4: {
-      return std::make_unique<EEPROM>(save_path, EEPROM::SIZE_4K);
-    }
-    case BackupType::EEPROM_64: {
-      return std::make_unique<EEPROM>(save_path, EEPROM::SIZE_64K);
-    }
+  switch(backup_type) {
+    case BackupType::SRAM:      return std::make_unique<SRAM>(save_path);
+    case BackupType::FLASH_64:  return std::make_unique<FLASH>(save_path, FLASH::SIZE_64K);
+    case BackupType::FLASH_128: return std::make_unique<FLASH>(save_path, FLASH::SIZE_128K);
+    case BackupType::EEPROM_4:  return std::make_unique<EEPROM>(save_path, EEPROM::SIZE_4K, core->GetScheduler());
+    case BackupType::EEPROM_64: return std::make_unique<EEPROM>(save_path, EEPROM::SIZE_64K, core->GetScheduler());
+    case BackupType::EEPROM_DETECT: return std::make_unique<EEPROM>(save_path, EEPROM::DETECT, core->GetScheduler());
   }
 
   return {};
@@ -168,7 +232,7 @@ auto ROMLoader::CreateBackup(
 auto ROMLoader::RoundSizeToPowerOfTwo(size_t size) -> size_t {
   size_t pot_size = 1;
 
-  while (pot_size < size) {
+  while(pot_size < size) {
     pot_size *= 2;
   }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -20,6 +20,19 @@ PPU::PPU(
     , irq(irq)
     , dma(dma)
     , config(config) {
+  scheduler.Register(Scheduler::EventClass::PPU_hdraw_vdraw, this, &PPU::BeginHDrawVDraw);
+  scheduler.Register(Scheduler::EventClass::PPU_hblank_vdraw, this, &PPU::BeginHBlankVDraw);
+  scheduler.Register(Scheduler::EventClass::PPU_hdraw_vblank, this, &PPU::BeginHDrawVBlank);
+  scheduler.Register(Scheduler::EventClass::PPU_hblank_vblank, this, &PPU::BeginHBlankVBlank);
+  scheduler.Register(Scheduler::EventClass::PPU_begin_sprite_fetch, this, &PPU::BeginSpriteDrawing);
+
+  scheduler.Register(Scheduler::EventClass::PPU_update_vcount_flag, this, &PPU::UpdateVerticalCounterFlag);
+  scheduler.Register(Scheduler::EventClass::PPU_video_dma, this, &PPU::RequestVideoDMA);
+  scheduler.Register(Scheduler::EventClass::PPU_latch_dispcnt, this, &PPU::LatchDISPCNT);
+  scheduler.Register(Scheduler::EventClass::PPU_hblank_irq, this, &PPU::RequestHblankIRQ);
+  scheduler.Register(Scheduler::EventClass::PPU_vblank_irq, this, &PPU::RequestVblankIRQ);
+  scheduler.Register(Scheduler::EventClass::PPU_vcount_irq, this, &PPU::RequestVcountIRQ);
+
   mmio.dispcnt.ppu = this;
   mmio.dispstat.ppu = this;
   Reset();
@@ -30,34 +43,34 @@ void PPU::Reset() {
   std::memset(oam,  0, 0x00400);
   std::memset(vram, 0, 0x18000);
 
+  vram_bg_latch = 0U;
+
   mmio.dispcnt.Reset();
   mmio.dispstat.Reset();
 
-  for (int i = 0; i < 4; i++) {
-    enable_bg[0][i] = false;
-    enable_bg[1][i] = false;
+  mmio.greenswap = 0U;
 
+  for(int i = 0; i < 4; i++) {
     mmio.bgcnt[i].Reset();
     mmio.bghofs[i] = 0;
     mmio.bgvofs[i] = 0;
-
-    if (i < 2) {
-      mmio.bgx[i].Reset();
-      mmio.bgy[i].Reset();
-      mmio.bgpa[i] = 0x100;
-      mmio.bgpb[i] = 0;
-      mmio.bgpc[i] = 0;
-      mmio.bgpd[i] = 0x100;
-    }
   }
 
-  mmio.winh[0].Reset();
-  mmio.winh[1].Reset();
-  mmio.winv[0].Reset();
-  mmio.winv[1].Reset();
+  for(int i = 0; i < 2; i++) {
+    mmio.bgx[i].Reset();
+    mmio.bgy[i].Reset();
+
+    mmio.bgpa[i] = 0x100;
+    mmio.bgpb[i] = 0;
+    mmio.bgpc[i] = 0;
+    mmio.bgpd[i] = 0x100;
+
+    mmio.winh[i].Reset();
+    mmio.winv[i].Reset();
+  }
+
   mmio.winin.Reset();
   mmio.winout.Reset();
-
   mmio.mosaic.Reset();
 
   mmio.eva = 0;
@@ -65,203 +78,181 @@ void PPU::Reset() {
   mmio.evy = 0;
   mmio.bldcnt.Reset();
 
-   // VCOUNT=225 DISPSTAT=3 was measured after reset on a 3DS in GBA mode (thanks Lady Starbreeze).
+  for(int i = 0; i < 3; i++) {
+    mmio.dispcnt_latch[i] = 0U;
+  }
+
+  // VCOUNT=225 DISPSTAT=3 was measured after reset on a 3DS in GBA mode (thanks Lady Starbreeze).
   mmio.vcount = 225;
   mmio.dispstat.vblank_flag = true;
   mmio.dispstat.hblank_flag = true;
-  scheduler.Add(226, this, &PPU::OnVblankHblankComplete);
+  scheduler.Add(226, Scheduler::EventClass::PPU_hdraw_vblank);
+
+  // To keep the state machine simple, we run sprite engine
+  // from a separate event loop.
+  scheduler.Add(266, Scheduler::EventClass::PPU_begin_sprite_fetch);
+
+  // @todo: initialize window with the appropriate timing.
+  bg = {};
+  sprite = {};
+  sprite.buffer_rd = sprite.buffer[0];
+  sprite.buffer_wr = sprite.buffer[1];
+  window = {};
+  merge = {};
+
+  frame = 0;
+  dma3_video_transfer_running = false;
 }
 
-void PPU::LatchEnabledBGs() {
-  for (int i = 0; i < 4; i++) {
-    enable_bg[0][i] = enable_bg[1][i];
+void PPU::BeginHDrawVDraw() {
+  auto& dispstat = mmio.dispstat;
+  auto& vcount = mmio.vcount;
+
+  DrawBackground();
+  DrawWindow();
+  DrawMerge();
+
+  scheduler.Add(1, Scheduler::EventClass::PPU_update_vcount_flag);
+  scheduler.Add(40, Scheduler::EventClass::PPU_latch_dispcnt);
+
+  dispstat.hblank_flag = 0;
+  vcount++;
+
+  UpdateVideoTransferDMA();
+
+  if(vcount == 160) {
+    scheduler.Add(1007, Scheduler::EventClass::PPU_hblank_vblank);
+    RequestVblankDMA();
+    dispstat.vblank_flag = 1;
+
+    if(dispstat.vblank_irq_enable) {
+      scheduler.Add(1, Scheduler::EventClass::PPU_vblank_irq);
+    }
+  } else {
+    InitBackground();
+    InitMerge();
+
+    scheduler.Add(1007, Scheduler::EventClass::PPU_hblank_vdraw);
   }
 
-  for (int i = 0; i < 4; i++) {
-    enable_bg[1][i] = mmio.dispcnt.enable[i];
-  }
+  InitWindow();
 }
 
-void PPU::CheckVerticalCounterIRQ() {
+void PPU::BeginHBlankVDraw() {
+  mmio.dispstat.hblank_flag = 1;
+
+  RequestHblankDMA();
+
+  if(mmio.dispstat.hblank_irq_enable) {
+    scheduler.Add(1, Scheduler::EventClass::PPU_hblank_irq);
+  }
+
+  scheduler.Add(225, Scheduler::EventClass::PPU_hdraw_vdraw);
+}
+
+void PPU::BeginHDrawVBlank() {
+  auto& vcount = mmio.vcount;
+  auto& dispstat = mmio.dispstat;
+
+  DrawWindow();
+
+  scheduler.Add(1, Scheduler::EventClass::PPU_update_vcount_flag);
+
+  dispstat.hblank_flag = 0;
+
+  if(vcount == 162) {
+    /**
+     * TODO:
+     *  - figure out when precisely DMA3CNT is latched
+     *  - figure out what bits of DMA3CNT are checked
+     */
+    dma3_video_transfer_running = dma.HasVideoTransferDMA();
+  }
+
+  if(vcount >= 224) {
+    scheduler.Add(40, Scheduler::EventClass::PPU_latch_dispcnt);
+  }
+
+  if(vcount == 227) {
+    scheduler.Add(1007, Scheduler::EventClass::PPU_hblank_vdraw);
+    vcount = 0;
+
+    config->video_dev->Draw(output[frame]);
+    frame ^= 1;
+
+    InitBackground();
+    InitMerge();
+  } else {
+    scheduler.Add(1007, Scheduler::EventClass::PPU_hblank_vblank);
+    
+    if(++vcount == 227) {
+      dispstat.vblank_flag = 0;
+    }
+  }
+
+  UpdateVideoTransferDMA();
+
+  InitWindow();
+}
+
+void PPU::BeginHBlankVBlank() {
+  auto& dispstat = mmio.dispstat;
+
+  dispstat.hblank_flag = 1;
+
+  if(mmio.dispstat.hblank_irq_enable) {
+    scheduler.Add(1, Scheduler::EventClass::PPU_hblank_irq);
+  }
+
+  scheduler.Add(225, Scheduler::EventClass::PPU_hdraw_vblank);
+}
+
+void PPU::BeginSpriteDrawing() {
+  const uint vcount = mmio.vcount;
+
+  if(vcount < 160U) {
+    DrawSprite();
+  }
+
+  if(vcount == 227U || vcount < 160U) {
+    std::swap(sprite.buffer_rd, sprite.buffer_wr);
+
+    if(vcount != 159U) {
+      InitSprite();
+    }
+  }
+
+  scheduler.Add(1232, Scheduler::EventClass::PPU_begin_sprite_fetch);
+}
+
+void PPU::UpdateVerticalCounterFlag() {
   auto& dispstat = mmio.dispstat;
   auto vcount_flag_new = dispstat.vcount_setting == mmio.vcount;
 
-  if (dispstat.vcount_irq_enable && !dispstat.vcount_flag && vcount_flag_new) {
-    irq.Raise(IRQ::Source::VCount);
+  if(dispstat.vcount_irq_enable && !dispstat.vcount_flag && vcount_flag_new) {
+    // @todo: why is it necessary to set the event priority here?
+    scheduler.Add(1, Scheduler::EventClass::PPU_vcount_irq, 1);
   }
   
   dispstat.vcount_flag = vcount_flag_new;
 }
 
-void PPU::OnScanlineComplete(int cycles_late) {
-  auto& bgx = mmio.bgx;
-  auto& bgy = mmio.bgy;
-  auto& bgpb = mmio.bgpb;
-  auto& bgpd = mmio.bgpd;
-  auto& mosaic = mmio.mosaic;
+void PPU::UpdateVideoTransferDMA() {
+  int vcount = mmio.vcount;
 
-  scheduler.Add(226 - cycles_late, this, &PPU::OnHblankComplete);
-
-  mmio.dispstat.hblank_flag = 1;
-
-  if (mmio.dispstat.hblank_irq_enable) {
-    irq.Raise(IRQ::Source::HBlank);
-  }
-
-  dma.Request(DMA::Occasion::HBlank);
-  
-  if (mmio.vcount >= 2) {
-    dma.Request(DMA::Occasion::Video);
-  }
-
-  // Advance vertical background mosaic counter
-  if (++mosaic.bg._counter_y == mosaic.bg.size_y) {
-    mosaic.bg._counter_y = 0;
-  }
-
-  /* Mode 0 doesn't have any affine backgrounds,
-   * in that case the internal X/Y registers will never be updated.
-   */
-  if (mmio.dispcnt.mode != 0) {
-    // Advance internal affine registers and apply vertical mosaic if applicable.
-    for (int i = 0; i < 2; i++) {
-      /* Do not update internal X/Y unless the latched BG enable bit is set.
-       * This behavior was confirmed on real hardware.
-       */
-      auto bg_id = 2 + i;
-
-      if (enable_bg[0][bg_id]) {
-        if (mmio.bgcnt[bg_id].mosaic_enable) {
-          if (mosaic.bg._counter_y == 0) {
-            bgx[i]._current += mosaic.bg.size_y * bgpb[i];
-            bgy[i]._current += mosaic.bg.size_y * bgpd[i];
-          }
-        } else {
-          bgx[i]._current += bgpb[i];
-          bgy[i]._current += bgpd[i];
-        }
-      }
-    }
-  }
-
-  /* TODO: it appears that this should really happen ~36 cycles into H-draw.
-   * But right now if we do that it breaks at least Pinball Tycoon.
-   */
-  LatchEnabledBGs();
-}
-
-void PPU::OnHblankComplete(int cycles_late) {
-  auto& dispcnt = mmio.dispcnt;
-  auto& dispstat = mmio.dispstat;
-  auto& vcount = mmio.vcount;
-  auto& bgx = mmio.bgx;
-  auto& bgy = mmio.bgy;
-  auto& mosaic = mmio.mosaic;
-
-  dispstat.hblank_flag = 0;
-  vcount++;
-  CheckVerticalCounterIRQ();
-
-  if (dispcnt.enable[ENABLE_WIN0]) {
-    RenderWindow(0);
-  }
-
-  if (dispcnt.enable[ENABLE_WIN1]) {
-    RenderWindow(1);
-  }
-
-  if (vcount == 160) {
-    config->video_dev->Draw(output);
-
-    scheduler.Add(1006 - cycles_late, this, &PPU::OnVblankScanlineComplete);
-    dma.Request(DMA::Occasion::VBlank);
-    dispstat.vblank_flag = 1;
-
-    if (dispstat.vblank_irq_enable) {
-      irq.Raise(IRQ::Source::VBlank);
-    }
-
-    // Reset vertical mosaic counters
-    mosaic.bg._counter_y = 0;
-    mosaic.obj._counter_y = 0;
-
-    // Reload internal affine registers
-    bgx[0]._current = bgx[0].initial;
-    bgy[0]._current = bgy[0].initial;
-    bgx[1]._current = bgx[1].initial;
-    bgy[1]._current = bgy[1].initial;
-  } else {
-    scheduler.Add(1006 - cycles_late, this, &PPU::OnScanlineComplete);
-    RenderScanline();
-    // Render OBJs for the next scanline.
-    if (mmio.dispcnt.enable[ENABLE_OBJ]) {
-      RenderLayerOAM(mmio.dispcnt.mode >= 3, mmio.vcount + 1);
+  if(dma3_video_transfer_running) {
+    if(vcount == 162) {
+      dma.StopVideoTransferDMA();
+    } else if(vcount >= 2 && vcount < 162) {
+      scheduler.Add(3, Scheduler::EventClass::PPU_video_dma);
     }
   }
 }
 
-void PPU::OnVblankScanlineComplete(int cycles_late) {
-  auto& dispstat = mmio.dispstat;
-
-  scheduler.Add(226 - cycles_late, this, &PPU::OnVblankHblankComplete);
-
-  dispstat.hblank_flag = 1;
-
-  if (mmio.vcount < 162) {
-    dma.Request(DMA::Occasion::Video);
-  } else if (mmio.vcount == 162) {
-    dma.StopVideoXferDMA();
-  }
-
-  if (dispstat.hblank_irq_enable) {
-    irq.Raise(IRQ::Source::HBlank);
-  }
-
-  if (mmio.vcount >= 225) {
-    /* TODO: it appears that this should really happen ~36 cycles into H-draw.
-     * But right now if we do that it breaks at least Pinball Tycoon.
-     */
-    LatchEnabledBGs();
-  }
-}
-
-void PPU::OnVblankHblankComplete(int cycles_late) {
-  auto& vcount = mmio.vcount;
-  auto& dispstat = mmio.dispstat;
-
-  dispstat.hblank_flag = 0;
-
-  if (vcount == 227) {
-    scheduler.Add(1006 - cycles_late, this, &PPU::OnScanlineComplete);
-    vcount = 0;
-  } else {
-    scheduler.Add(1006 - cycles_late, this, &PPU::OnVblankScanlineComplete);
-    if (++vcount == 227) {
-      dispstat.vblank_flag = 0;
-      // Render OBJs for the next scanline
-      if (mmio.dispcnt.enable[ENABLE_OBJ]) {
-        RenderLayerOAM(mmio.dispcnt.mode >= 3, 0);
-      }
-    }
-  }
-
-  if (mmio.dispcnt.enable[ENABLE_WIN0]) {
-    RenderWindow(0);
-  }
-
-  if (mmio.dispcnt.enable[ENABLE_WIN1]) {
-    RenderWindow(1);
-  }
-
-  if (vcount == 0) {
-    RenderScanline();
-    // Render OBJs for the next scanline
-    if (mmio.dispcnt.enable[ENABLE_OBJ]) {
-      RenderLayerOAM(mmio.dispcnt.mode >= 3, 1);
-    }
-  }
-
-  CheckVerticalCounterIRQ();
+void PPU::LatchDISPCNT() {
+  mmio.dispcnt_latch[0] = mmio.dispcnt_latch[1];
+  mmio.dispcnt_latch[1] = mmio.dispcnt_latch[2];
+  mmio.dispcnt_latch[2] = mmio.dispcnt.hword;
 }
 
 } // namespace nba::core

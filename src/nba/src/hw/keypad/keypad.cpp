@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -11,56 +11,47 @@
 
 namespace nba::core {
 
-KeyPad::KeyPad(IRQ& irq, std::shared_ptr<Config> config)
-    : irq(irq)
-    , config(config) {
+KeyPad::KeyPad(Scheduler& scheduler, IRQ& irq)
+    : scheduler(scheduler)
+    , irq(irq) {
   Reset();
 }
 
 void KeyPad::Reset() {
   input = {};
+  input.keypad = this;
   control = {};
   control.keypad = this;
-  config->input_dev->SetOnChangeCallback(std::bind(&KeyPad::UpdateInput, this));
 }
 
-void KeyPad::UpdateInput() {
-  auto& input_device = config->input_dev;
+void KeyPad::SetKeyStatus(Key key, bool pressed) {
+  const u16 bit = 1 << (int)key;
 
-  u16 input = 0;
-
-  if (!input_device->Poll(Key::A)) input |= 1;
-  if (!input_device->Poll(Key::B)) input |= 2;
-  if (!input_device->Poll(Key::Select)) input |= 4;
-  if (!input_device->Poll(Key::Start)) input |= 8;
-  if (!input_device->Poll(Key::Right)) input |= 16;
-  if (!input_device->Poll(Key::Left)) input |= 32;
-  if (!input_device->Poll(Key::Up)) input |= 64;
-  if (!input_device->Poll(Key::Down)) input |= 128;
-  if (!input_device->Poll(Key::R)) input |= 256;
-  if (!input_device->Poll(Key::L)) input |= 512;
-
-  this->input.value = input;
+  if(pressed) {
+    input.value &= ~bit;
+  } else {
+    input.value |=  bit;
+  }
 
   UpdateIRQ();
 }
 
 void KeyPad::UpdateIRQ() {
-  if (control.interrupt) {
+  if(control.interrupt) {
     auto not_input = ~input.value & 0x3FF;
     
-    if (control.mode == KeyControl::Mode::LogicalAND) {
-      if (control.mask == not_input) {
+    if(control.mode == KeyControl::Mode::LogicalAND) {
+      if(control.mask == not_input) {
         irq.Raise(IRQ::Source::Keypad);
       }
-    } else if ((control.mask & not_input) != 0) {
+    } else if((control.mask & not_input) != 0) {
       irq.Raise(IRQ::Source::Keypad);
     }
   }
 }
 
 auto KeyPad::KeyInput::ReadByte(uint offset) -> u8 {
-  switch (offset) {
+  switch(offset) {
     case 0:
       return u8(value);
     case 1:
@@ -71,7 +62,7 @@ auto KeyPad::KeyInput::ReadByte(uint offset) -> u8 {
 }
 
 auto KeyPad::KeyControl::ReadByte(uint offset) -> u8 {
-  switch (offset) {
+  switch(offset) {
     case 0: {
       return u8(mask);
     }
@@ -86,7 +77,7 @@ auto KeyPad::KeyControl::ReadByte(uint offset) -> u8 {
 }
 
 void KeyPad::KeyControl::WriteByte(uint offset, u8 value) {
-  switch (offset) {
+  switch(offset) {
     case 0: {
       mask &= 0xFF00;
       mask |= value;

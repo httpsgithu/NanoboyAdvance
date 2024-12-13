@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -10,6 +10,7 @@
 #include <array>
 #include <nba/rom/rom.hpp>
 #include <nba/integer.hpp>
+#include <nba/save_state.hpp>
 #include <vector>
 
 #include "hw/apu/apu.hpp"
@@ -26,22 +27,25 @@ struct ARM7TDMI;
 } // namespace nba::core::arm
 
 struct Bus {
-  enum class Access {
+  enum Access {
     Nonsequential = 0,
-    Sequential  = 1
+    Sequential = 1,
+    Code = 2,
+    Dma = 4,
+    Lock = 8
   };
 
   void Reset();
   void Attach(std::vector<u8> const& bios);
   void Attach(ROM&& rom);
 
-  auto ReadByte(u32 address, Access access) ->  u8;
-  auto ReadHalf(u32 address, Access access) -> u16;
-  auto ReadWord(u32 address, Access access) -> u32;
+  auto ReadByte(u32 address, int access) ->  u8;
+  auto ReadHalf(u32 address, int access) -> u16;
+  auto ReadWord(u32 address, int access) -> u32;
 
-  void WriteByte(u32 address, u8  value, Access access);
-  void WriteHalf(u32 address, u16 value, Access access);
-  void WriteWord(u32 address, u32 value, Access access);
+  void WriteByte(u32 address, u8  value, int access);
+  void WriteHalf(u32 address, u16 value, int access);
+  void WriteWord(u32 address, u32 value, int access);
 
   void Idle();
 
@@ -78,14 +82,22 @@ struct Bus {
       bool cgb = false;
     } waitcnt;
 
+    bool prefetch_buffer_was_disabled = false;
+
     enum class HaltControl {
-      Run,
-      Stop,
-      Halt
+      Run = 0,
+      Stop = 1,
+      Halt = 2
     } haltcnt = HaltControl::Run;
 
+    u16 siocnt = 0;
     u8 rcnt[2] { 0, 0 };
     u8 postflg = 0;
+
+    struct MGBALog {
+      u16 enable = 0;
+      std::array<char, 257> message;
+    } mgba_log = {};
 
     auto ReadByte(u32 address) ->  u8;
     auto ReadHalf(u32 address) -> u16;
@@ -105,31 +117,143 @@ struct Bus {
     int opcode_width = 4;
     int countdown;
     int duty;
+    bool thumb;
   } prefetch;
 
-  struct DMA {
-    bool active = false;
-    bool openbus = false;
-  } dma;
+  int last_access;
+  int parallel_internal_cpu_cycle_limit;
 
   template<typename T>
-  auto Read(u32 address, Access access) -> T;
+  auto Read(u32 address, int access) -> T;
   
   template<typename T>
-  void Write(u32 address, Access access, T value);
+  void Write(u32 address, int access, T value);
 
   template<typename T>
   auto Align(u32 address) -> u32 {
     return address & ~(sizeof(T) - 1);
   }
 
+  template<typename T>
+  auto ALWAYS_INLINE ReadPRAM(u32 address) noexcept -> T {
+    constexpr int cycles = std::is_same_v<T, u32> ? 2 : 1;
+
+    for(int i = 0; i < cycles; i++) {
+      do {
+        Step(1);
+        hw.ppu.Sync();
+      } while(hw.ppu.DidAccessPRAM());
+    }
+
+    return hw.ppu.ReadPRAM<T>(address);
+  }
+
+  template<typename T>
+  void ALWAYS_INLINE WritePRAM(u32 address, T value) noexcept {
+    if constexpr (!std::is_same_v<T, u32>) {
+      do {
+        Step(1);
+        hw.ppu.Sync();
+      } while(hw.ppu.DidAccessPRAM());
+
+      hw.ppu.WritePRAM<T>(address, value);
+    } else {
+      WritePRAM(address + 0, (u16)(value >>  0));
+      WritePRAM(address + 2, (u16)(value >> 16));
+    }
+  }
+
+  template<typename T>
+  auto ALWAYS_INLINE ReadVRAM(u32 address) noexcept -> T {
+    constexpr int cycles = std::is_same_v<T, u32> ? 2 : 1;
+
+    u32 boundary = hw.ppu.GetSpriteVRAMBoundary();
+
+    address &= 0x1FFFF;
+
+    if(address >= boundary) {
+      for(int i = 0; i < cycles; i++) {
+        do {
+          Step(1);
+          hw.ppu.Sync();
+        } while(hw.ppu.DidAccessVRAM_OBJ());
+      }
+
+      return hw.ppu.ReadVRAM_OBJ<T>(address, boundary);
+    } else {
+      for(int i = 0; i < cycles; i++) {
+        do {
+          Step(1);
+          hw.ppu.Sync();
+        } while(hw.ppu.DidAccessVRAM_BG());
+      }
+
+      return hw.ppu.ReadVRAM_BG<T>(address);
+    }
+  }
+
+  template<typename T>
+  void ALWAYS_INLINE WriteVRAM(u32 address, T value) noexcept {
+    if constexpr (!std::is_same_v<T, u32>) {
+      u32 boundary = hw.ppu.GetSpriteVRAMBoundary();
+
+      address &= 0x1FFFF;
+
+      if(address >= boundary) {
+        // TODO: de-duplicate this code (see ReadVRAM):
+        do {
+          Step(1);
+          hw.ppu.Sync();
+        } while(hw.ppu.DidAccessVRAM_OBJ());
+
+        hw.ppu.WriteVRAM_OBJ<T>(address, value, boundary);
+      } else {
+        // TODO: de-duplicate this code (see ReadVRAM):
+        do {
+          Step(1);
+          hw.ppu.Sync();
+        } while(hw.ppu.DidAccessVRAM_BG());
+
+        hw.ppu.WriteVRAM_BG<T>(address, value);
+      }
+    } else {
+      WriteVRAM<u16>(address + 0, (u16)(value >>  0));
+      WriteVRAM<u16>(address + 2, (u16)(value >> 16));
+    }
+  }
+
+  template<typename T>
+  auto ALWAYS_INLINE ReadOAM(u32 address) noexcept -> T {
+    do {
+      Step(1);
+      hw.ppu.Sync();
+    } while(hw.ppu.DidAccessOAM());
+
+    return hw.ppu.ReadOAM<T>(address);
+  }
+
+  template<typename T>
+  void ALWAYS_INLINE WriteOAM(u32 address, T value) noexcept {
+    do {
+      Step(1);
+      hw.ppu.Sync();
+    } while(hw.ppu.DidAccessOAM());
+
+    hw.ppu.WriteOAM<T>(address, value);
+  }
+
   auto ReadBIOS(u32 address) -> u32;
   auto ReadOpenBus(u32 address) -> u32;
 
-  void Prefetch(u32 address, int cycles);
+  void SIOTransferDone();
+
+  void Prefetch(u32 address, bool code, int cycles);
   void StopPrefetch();
   void Step(int cycles);
   void UpdateWaitStateTable();
+
+  void LoadState(SaveState const& state);
+  void CopyState(SaveState& state);
  
   int wait16[2][16] {
     { 1, 1, 3, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1 },

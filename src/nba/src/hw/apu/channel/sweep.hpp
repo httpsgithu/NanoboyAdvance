@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -8,6 +8,11 @@
 #pragma once
 
 namespace nba::core {
+
+/**
+ * TODO: figure out specifics of how the sweep timer works when the sweep speed (divider) is set to zero
+ * or changed in the middle of a note.
+ */
 
 class Sweep {
 public:
@@ -23,7 +28,7 @@ public:
     /* TODO: If the sweep shift is non-zero, frequency calculation and the
      * overflow check are performed immediately.
      */
-    if (enabled) {
+    if(enabled) {
       current_freq = initial_freq;
       shadow_freq = initial_freq;
       step = divider;
@@ -32,7 +37,7 @@ public:
   }
 
   bool Tick() {
-    if (active && --step == 0) {
+    if(active && --step == 0) {
       int new_freq;
       int offset = shadow_freq >> shift;
 
@@ -41,15 +46,15 @@ public:
        */
       step = divider;
 
-      if (direction == Direction::Increment) {
+      if(direction == Direction::Increment) {
         new_freq = shadow_freq + offset;
       } else {
         new_freq = shadow_freq - offset;
       }
 
-      if (new_freq >= 2048) {
+      if(new_freq >= 2048) {
         return false;
-      } else if (shift != 0) {
+      } else if(shift != 0) {
         shadow_freq  = new_freq;
         current_freq = new_freq;
       }
@@ -73,6 +78,8 @@ public:
   int shift;
 
 private:
+  friend class BaseChannel;
+
   int step;
 };
 

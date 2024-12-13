@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -9,7 +9,7 @@
 
 namespace nba {
 
-SRAM::SRAM(std::string const& save_path)
+SRAM::SRAM(fs::path const& save_path)
     : save_path(save_path) {
   Reset();
 }

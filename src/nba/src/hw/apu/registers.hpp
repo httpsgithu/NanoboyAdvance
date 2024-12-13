@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -9,7 +9,9 @@
 
 #include <nba/integer.hpp>
 
-#include "hw/apu/channel/base_channel.hpp"
+#include "hw/apu/channel/quad_channel.hpp"
+#include "hw/apu/channel/wave_channel.hpp"
+#include "hw/apu/channel/noise_channel.hpp"
 #include "hw/apu/channel/fifo.hpp"
 
 namespace nba::core {
@@ -27,10 +29,10 @@ enum DMANumber {
 struct SoundControl {
   SoundControl(
     FIFO* fifos,
-    BaseChannel& psg1,
-    BaseChannel& psg2,
-    BaseChannel& psg3,
-    BaseChannel& psg4)
+    QuadChannel& psg1,
+    QuadChannel& psg2,
+    WaveChannel& psg3,
+    NoiseChannel& psg4)
       : fifos(fifos)
       , psg1(psg1)
       , psg2(psg2)
@@ -56,13 +58,16 @@ struct SoundControl {
   auto Read(int address) -> u8;
   void Write(int address, u8 value);
 
+  auto ReadWord() -> u32;
+  void WriteWord(u32 value);
+
 private:
   FIFO* fifos;
 
-  BaseChannel& psg1;
-  BaseChannel& psg2;
-  BaseChannel& psg3;
-  BaseChannel& psg4;
+  QuadChannel& psg1;
+  QuadChannel& psg2;
+  WaveChannel& psg3;
+  NoiseChannel& psg4;
 };
 
 struct BIAS {
@@ -72,6 +77,9 @@ struct BIAS {
   void Reset();
   auto Read(int address) -> u8;
   void Write(int address, u8 value);
+
+  auto ReadHalf() -> u16;
+  void WriteHalf(u16 value);
   
   auto GetSampleInterval() -> int { return 512 >> resolution; }
   auto GetSampleRate() -> int { return 32768 << resolution; }

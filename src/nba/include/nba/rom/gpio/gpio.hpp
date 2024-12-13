@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -8,27 +8,32 @@
 #pragma once
 
 #include <cassert>
+#include <nba/rom/gpio/device.hpp>
 #include <nba/integer.hpp>
+#include <nba/save_state.hpp>
+#include <memory>
+#include <typeindex>
+#include <unordered_map>
+#include <vector>
 
 namespace nba {
 
 struct GPIO {
-  enum class PortDirection {
-    In  = 0, // GPIO -> GBA
-    Out = 1  // GPIO <- GBA
-  };
-
   GPIO() {
     Reset();
   }
 
-  virtual ~GPIO() = default;
-
   void Reset();
+  void Attach(std::shared_ptr<GPIODevice> device);
 
-  auto GetPortDirection(int port) const -> PortDirection {
-    assert(port < 4);
-    return direction[port];
+  template<typename T>
+  auto Get() -> T* {
+    auto match = device_map.find(std::type_index{typeid(T)});
+
+    if(match != device_map.end()) {
+      return (T*)match->second;
+    }
+    return nullptr;
   }
 
   bool IsReadable() const {
@@ -38,9 +43,8 @@ struct GPIO {
   auto Read (u32 address) -> u8;
   void Write(u32 address, u8 value);
 
-protected:
-  virtual auto ReadPort() -> u8 = 0;
-  virtual void WritePort(u8 value) = 0;
+  void LoadState(SaveState const& state);
+  void CopyState(SaveState& state);
 
 private:
   enum class Register {
@@ -49,13 +53,14 @@ private:
     Control = 0xC8
   };
 
-  void UpdateReadWriteMasks();
-
   bool allow_reads;
-  PortDirection direction[4];
   u8 rd_mask;
   u8 wr_mask;
   u8 port_data;
+
+  std::vector<std::shared_ptr<GPIODevice>> devices;
+
+  std::unordered_map<std::type_index, GPIODevice*> device_map;
 };
 
 } // namespace nba

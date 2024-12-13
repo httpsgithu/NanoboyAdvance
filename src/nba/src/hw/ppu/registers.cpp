@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -16,31 +16,19 @@ void DisplayControl::Reset() {
 }
 
 auto DisplayControl::Read(int address) -> u8 {
-  switch (address) {
-    case 0:
-      return mode |
-            (cgb_mode << 3) |
-            (frame << 4) |
-            (hblank_oam_access << 5) |
-            (oam_mapping_1d << 6) |
-            (forced_blank << 7);
-    case 1:
-      return enable[0] |
-            (enable[1] << 1) |
-            (enable[2] << 2) |
-            (enable[3] << 3) |
-            (enable[4] << 4) |
-            (enable[5] << 5) |
-            (enable[6] << 6) |
-            (enable[7] << 7);
+  switch(address) {
+    case 0: return (u8)(hword >> 0);
+    case 1: return (u8)(hword >> 8);
   }
 
   return 0;
 }
 
 void DisplayControl::Write(int address, u8 value) {
-  switch (address) {
-    case 0:
+  switch(address) {
+    case 0: {
+      hword = (hword & 0xFF00) | value;
+
       mode = value & 7;
       cgb_mode = (value >> 3) & 1;
       frame = (value >> 4) & 1;
@@ -48,12 +36,25 @@ void DisplayControl::Write(int address, u8 value) {
       oam_mapping_1d = (value >> 6) & 1;
       forced_blank = (value >> 7) & 1;
       break;
-    case 1:
-      for (int i = 0; i < 8; i++) {
+    }
+    case 1: {
+      hword = (hword & 0x00FF) | (value << 8);
+
+      for(int i = 0; i < 8; i++) {
         enable[i] = (value >> i) & 1;
       }
       break;
+    }
   }
+}
+
+auto DisplayControl::ReadHalf() -> u16 {
+  return Read(0) | (Read(1) << 8);
+}
+
+void DisplayControl::WriteHalf(u16 value) {
+  Write(0, (u8)value);
+  Write(1, (u8)(value >> 8));
 }
 
 void DisplayStatus::Reset() {
@@ -62,7 +63,7 @@ void DisplayStatus::Reset() {
 }
 
 auto DisplayStatus::Read(int address) -> u8 {
-  switch (address) {
+  switch(address) {
     case 0:
       return vblank_flag |
             (hblank_flag << 1) |
@@ -78,7 +79,7 @@ auto DisplayStatus::Read(int address) -> u8 {
 }
 
 void DisplayStatus::Write(int address, u8 value) {
-  switch (address) {
+  switch(address) {
     case 0:
       vblank_irq_enable = (value >> 3) & 1;
       hblank_irq_enable = (value >> 4) & 1;
@@ -89,7 +90,16 @@ void DisplayStatus::Write(int address, u8 value) {
       break;
   }
 
-  ppu->CheckVerticalCounterIRQ();
+  ppu->UpdateVerticalCounterFlag();
+}
+
+auto DisplayStatus::ReadHalf() -> u16 {
+  return Read(0) | (Read(1) << 8);
+}
+
+void DisplayStatus::WriteHalf(u16 value) {
+  Write(0, (u8)value);
+  Write(1, (u8)(value >> 8));
 }
 
 void BackgroundControl::Reset() {
@@ -98,7 +108,7 @@ void BackgroundControl::Reset() {
 }
 
 auto BackgroundControl::Read(int address) -> u8 {
-  switch (address) {
+  switch(address) {
     case 0:
       return priority |
             (tile_block << 2) |
@@ -115,7 +125,7 @@ auto BackgroundControl::Read(int address) -> u8 {
 }
 
 void BackgroundControl::Write(int address, u8 value) {  
-  switch (address) {
+  switch(address) {
     case 0:
       priority = value & 3;
       tile_block = (value >> 2) & 3;
@@ -125,7 +135,7 @@ void BackgroundControl::Write(int address, u8 value) {
       break;
     case 1:
       map_block = value & 0x1F;
-      if (id >= 2) {
+      if(id >= 2) {
         wraparound = (value >> 5) & 1;
       }
       size = value >> 6;
@@ -133,42 +143,58 @@ void BackgroundControl::Write(int address, u8 value) {
   }
 }
 
+auto BackgroundControl::ReadHalf() -> u16 {
+  return Read(0) | (Read(1) << 8);
+}
+
+void BackgroundControl::WriteHalf(u16 value) {
+  Write(0, (u8)value);
+  Write(1, (u8)(value >> 8));
+}
+
 void ReferencePoint::Reset() {
   initial = _current = 0;
+  written = false;
 }
 
 void ReferencePoint::Write(int address, u8 value) {
-  switch (address) {
+  switch(address) {
     case 0: initial = (initial & 0x0FFFFF00) | (value <<  0); break;
     case 1: initial = (initial & 0x0FFF00FF) | (value <<  8); break;
     case 2: initial = (initial & 0x0F00FFFF) | (value << 16); break;
     case 3: initial = (initial & 0x00FFFFFF) | (value << 24); break;
   }
   
-  if (initial & (1 << 27)) {
+  if(initial & (1 << 27)) {
     initial |= 0xF0000000;
   }
   
-  _current = initial;
+  written = true;
 }
 
 void WindowRange::Reset() {
   min = 0;
   max = 0;
-  _changed = false;
 }
 
 void WindowRange::Write(int address, u8 value) {
-  switch (address) {
+  switch(address) {
     case 0:
-      if (value != max) _changed = true;
       max = value;
       break;
     case 1:
-      if (value != min) _changed = true;
       min = value;
       break;
   }
+}
+
+auto WindowRange::ReadHalf() -> u16 {
+  return max | (min << 8);
+}
+
+void WindowRange::WriteHalf(u16 value) {
+  Write(0, (u8)value);
+  Write(1, (u8)(value >> 8));
 }
 
 void WindowLayerSelect::Reset() {
@@ -179,7 +205,7 @@ void WindowLayerSelect::Reset() {
 auto WindowLayerSelect::Read(int address) -> u8 {
   u8 value = 0;
   
-  for (int i = 0; i < 6; i++) {
+  for(int i = 0; i < 6; i++) {
     value |= enable[address][i] << i;
   }
   
@@ -187,9 +213,18 @@ auto WindowLayerSelect::Read(int address) -> u8 {
 }
 
 void WindowLayerSelect::Write(int address, u8 value) {
-  for (int i = 0; i < 6; i++) {
+  for(int i = 0; i < 6; i++) {
     enable[address][i] = (value >> i) & 1;
   }
+}
+
+auto WindowLayerSelect::ReadHalf() -> u16 {
+  return Read(0) | (Read(1) << 8);
+}
+
+void WindowLayerSelect::WriteHalf(u16 value) {
+  Write(0, (u8)value);
+  Write(1, (u8)(value >> 8));
 }
 
 void BlendControl::Reset() {
@@ -200,14 +235,14 @@ void BlendControl::Reset() {
 auto BlendControl::Read(int address) -> u8 {
   u8 value = 0;
 
-  switch (address) {
+  switch(address) {
     case 0:
-      for (int i = 0; i < 6; i++)
+      for(int i = 0; i < 6; i++)
         value |= targets[0][i] << i;
       value |= sfx << 6;
       break;
     case 1:
-      for (int i = 0; i < 6; i++)
+      for(int i = 0; i < 6; i++)
         value |= targets[1][i] << i;
       break;
   }
@@ -216,17 +251,26 @@ auto BlendControl::Read(int address) -> u8 {
 }
 
 void BlendControl::Write(int address, u8 value) {
-  switch (address)
+  switch(address)
     case 0: {
-      for (int i = 0; i < 6; i++)
+      for(int i = 0; i < 6; i++)
         targets[0][i] = (value >> i) & 1;
       sfx = (Effect)(value >> 6);
       break;
     case 1:
-      for (int i = 0; i < 6; i++)
+      for(int i = 0; i < 6; i++)
         targets[1][i] = (value >> i) & 1;
       break;
   }
+}
+
+auto BlendControl::ReadHalf() -> u16 {
+  return Read(0) | (Read(1) << 8);
+}
+
+void BlendControl::WriteHalf(u16 value) {
+  Write(0, (u8)value);
+  Write(1, (u8)(value >> 8));
 }
 
 void Mosaic::Reset() {
@@ -240,16 +284,14 @@ void Mosaic::Reset() {
 
 void Mosaic::Write(int address, u8 value) {
   // TODO: how does hardware handle mid-frame or mid-line mosaic changes?
-  switch (address)
+  switch(address)
     case 0: {
       bg.size_x = (value & 15) + 1;
       bg.size_y = (value >> 4) + 1;
-      bg._counter_y = 0;
       break;
     case 1:
       obj.size_x = (value & 15) + 1;
       obj.size_y = (value >> 4) + 1;
-      obj._counter_y = 0;
       break;
   }
 }

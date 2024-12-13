@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -10,6 +10,7 @@
 #include <nba/integer.hpp>
 
 constexpr u32 DISPCNT = 0x04000000;
+constexpr u32 GREENSWAP = 0x04000002;
 constexpr u32 DISPSTAT = 0x04000004;
 constexpr u32 VCOUNT = 0x04000006;
 constexpr u32 BG0CNT = 0x04000008;
@@ -109,3 +110,8 @@ constexpr u32 WAITCNT = 0x04000204;
 constexpr u32 IME = 0x04000208;
 constexpr u32 POSTFLG = 0x04000300;
 constexpr u32 HALTCNT = 0x04000301;
+
+constexpr u32 MGBA_LOG_STRING_LO = 0x04FFF600;
+constexpr u32 MGBA_LOG_STRING_HI = 0x04FFF700;
+constexpr u32 MGBA_LOG_SEND = 0x04FFF700;
+constexpr u32 MGBA_LOG_ENABLE = 0x04FFF780; 

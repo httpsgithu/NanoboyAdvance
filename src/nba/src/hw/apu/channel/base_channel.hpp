@@ -1,11 +1,13 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
  */
 
 #pragma once
+
+#include <nba/save_state.hpp>
 
 #include "hw/apu/channel/length_counter.hpp"
 #include "hw/apu/channel/envelope.hpp"
@@ -40,13 +42,16 @@ public:
 
   void Tick() {
     // http://gbdev.gg8.se/wiki/articles/Gameboy_sound_hardware#Frame_Sequencer
-    if ((step & 1) == 0) enabled &= length.Tick();
-    if ((step & 3) == 2) enabled &= sweep.Tick();
-    if (step == 7) envelope.Tick();
+    if((step & 1) == 0) enabled &= length.Tick();
+    if((step & 3) == 2) enabled &= sweep.Tick();
+    if(step == 7) envelope.Tick();
 
     step++;
     step &= 7;
   }
+
+  void LoadState(SaveState::APU::IO::PSG const& state);
+  void CopyState(SaveState::APU::IO::PSG& state);
 
 protected:
   void Restart() {

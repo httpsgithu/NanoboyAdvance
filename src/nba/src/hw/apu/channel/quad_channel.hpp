@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -8,24 +8,27 @@
 #pragma once
 
 #include <nba/integer.hpp>
+#include <nba/scheduler.hpp>
 
 #include "hw/apu/channel/base_channel.hpp"
-#include "scheduler.hpp"
 
 namespace nba::core {
 
-class QuadChannel : public BaseChannel {
+class QuadChannel final : public BaseChannel {
 public:
-  QuadChannel(Scheduler& scheduler);
+  QuadChannel(Scheduler& scheduler, Scheduler::EventClass event_class);
 
   void Reset();
   auto GetSample() -> s8 override { return sample; }
-  void Generate(int cycles_late);
+  void Generate();
   auto Read (int offset) -> u8;
   void Write(int offset, u8 value);
 
+  void LoadState(SaveState::APU::IO::QuadChannel const& state);
+  void CopyState(SaveState::APU::IO::QuadChannel& state);
+
 private:
-  constexpr int GetSynthesisIntervalFromFrequency(int frequency) {
+  static constexpr int GetSynthesisIntervalFromFrequency(int frequency) {
     // 128 cycles equals 131072 Hz, the highest possible frequency.
     // We are dividing by eight, because the waveform can change at
     // eight evenly spaced points inside a single cycle, depending on the wave duty.
@@ -33,9 +36,8 @@ private:
   }
 
   Scheduler& scheduler;
-  std::function<void(int)> event_cb = [this](int cycles_late) {
-    this->Generate(cycles_late);
-  };
+  Scheduler::EventClass event_class;
+  Scheduler::Event* event;
 
   s8 sample = 0;
   int phase;
