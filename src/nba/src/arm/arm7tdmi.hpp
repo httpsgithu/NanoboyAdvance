@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -10,10 +10,19 @@
 #include <array>
 #include <nba/common/compiler.hpp>
 #include <nba/log.hpp>
-#include <scheduler.hpp>
+#include <nba/save_state.hpp>
+#include <nba/scheduler.hpp>
 
 #include "bus/bus.hpp"
 #include "arm/state.hpp"
+
+/**
+ * Some TODOs:
+ * - test LDR, STR, LDM and STM behavior when writing back the address to r15
+ * - test which bits of CPSR and SPSR are actually writable
+ * - more accurately model when CPSR.mask_irq and the IRQ line are sampled
+ * - test if Thumb CMP r15, rX loads SPSR into CPSR
+ */
 
 namespace nba::core::arm {
 
@@ -23,6 +32,8 @@ struct ARM7TDMI {
   ARM7TDMI(Scheduler& scheduler, Bus& bus)
       : scheduler(scheduler)
       , bus(bus) {
+    scheduler.Register(Scheduler::EventClass::ARM_ldm_usermode_conflict, this, &ARM7TDMI::ClearLDMUsermodeConflictFlag);
+
     Reset();
   }
 
@@ -34,7 +45,7 @@ struct ARM7TDMI {
 
     pipe.opcode[0] = 0xF0000000;
     pipe.opcode[1] = 0xF0000000;
-    pipe.fetch_type = Access::Nonsequential;
+    pipe.access = Access::Code | Access::Nonsequential;
     irq_line = false;
     latch_irq_disable = state.cpsr.f.mask_irq;
     ldm_usermode_conflict = false;
@@ -46,31 +57,29 @@ struct ARM7TDMI {
   }
 
   void Run() {
-    if (IRQLine()) SignalIRQ();
+    if(IRQLine()) SignalIRQ();
 
     auto instruction = pipe.opcode[0];
 
     latch_irq_disable = state.cpsr.f.mask_irq;
 
-    if (state.cpsr.f.thumb) {
-      state.r15 &= ~1;
+    state.r15 &= ~1;
 
+    if(state.cpsr.f.thumb) {
       pipe.opcode[0] = pipe.opcode[1];
-      pipe.opcode[1] = ReadHalf(state.r15, pipe.fetch_type);
+      pipe.opcode[1] = ReadHalf(state.r15, pipe.access);
 
       (this->*s_opcode_lut_16[instruction >> 6])(instruction);
     } else {
-      state.r15 &= ~3;
-
       pipe.opcode[0] = pipe.opcode[1];
-      pipe.opcode[1] = ReadWord(state.r15, pipe.fetch_type);
+      pipe.opcode[1] = ReadWord(state.r15, pipe.access);
 
-      if (CheckCondition(static_cast<Condition>(instruction >> 28))) {
+      if(CheckCondition(static_cast<Condition>(instruction >> 28))) {
         int hash = ((instruction >> 16) & 0xFF0) |
                    ((instruction >>  4) & 0x00F);
         (this->*s_opcode_lut_32[hash])(instruction);
       } else {
-        pipe.fetch_type = Access::Sequential;
+        pipe.access = Access::Code | Access::Sequential;
         state.r15 += 4;
       }
     }
@@ -82,38 +91,56 @@ struct ARM7TDMI {
 
     state.cpsr.f.mode = new_mode;
 
-    if (new_bank != BANK_NONE) {
+    if(new_bank != BANK_NONE) {
       p_spsr = &state.spsr[new_bank];
     } else {
       /* In system/user mode reading from SPSR returns the current CPSR value.
-       * However writes to SPSR appear to do nothing.
+       * However, writes to SPSR appear to do nothing.
        * We take care of this fact in the MSR implementation.
        */
       p_spsr = &state.cpsr;
     }
 
-    if (old_bank == new_bank) {
+    if(old_bank == new_bank) {
       return;
     }
 
-    if (old_bank == BANK_FIQ || new_bank == BANK_FIQ) {
-      for (int i = 0; i < 7; i++) {
-        state.bank[old_bank][i] = state.reg[8 + i];
+    if(old_bank == BANK_FIQ) {
+      for(int i = 0; i < 5; i++) {
+        state.bank[BANK_FIQ][i] = state.reg[8 + i];
       }
 
-      for (int i = 0; i < 7; i++) {
-        state.reg[8 + i] = state.bank[new_bank][i];
+      for(int i = 0; i < 5; i++) {
+        state.reg[8 + i] = state.bank[BANK_NONE][i];
       }
-    } else {
-      state.bank[old_bank][5] = state.r13;
-      state.bank[old_bank][6] = state.r14;
+    } else if(new_bank == BANK_FIQ) {
+      for(int i = 0; i < 5; i++) {
+        state.bank[BANK_NONE][i] = state.reg[8 + i];
+      }
 
-      state.r13 = state.bank[new_bank][5];
-      state.r14 = state.bank[new_bank][6];
+      for(int i = 0; i < 5; i++) {
+        state.reg[8 + i] = state.bank[BANK_FIQ][i];
+      }
     }
 
-    cpu_mode_is_invalid = new_bank == BANK_INVALID;
+    state.bank[old_bank][5] = state.r13;
+    state.bank[old_bank][6] = state.r14;
+
+    if(new_bank != BANK_INVALID) [[likely]] {
+      state.r13 = state.bank[new_bank][5];
+      state.r14 = state.bank[new_bank][6];
+      cpu_mode_is_invalid = false;
+    } else {
+      for(int i = 0; i < 7; i++) {
+        state.reg[8 + i] = 0u;
+      }
+      state.spsr[BANK_INVALID] = 0u;
+      cpu_mode_is_invalid = true;
+    }
   }
+
+  void LoadState(SaveState const& save_state);
+  void CopyState(SaveState& save_state);
 
   RegisterFile state;
 
@@ -124,15 +151,12 @@ private:
   friend struct TableGen;
 
   auto GetReg(int id) -> u32 {
-    u32 result = 0;
-    bool is_banked = id >= 8 && id != 15;
+    u32 result = state.reg[id];
 
-    if (unlikely(ldm_usermode_conflict && is_banked)) {
+    if(unlikely(ldm_usermode_conflict && id >= 8 && id != 15)) {
+      // This array holds the current user/sys bank value only if the CPU wasn't in user or system mode all along during the user mode LDM instruction.
+      // We take care in the LDM implementation that this branch is only taken if that was the case.
       result |= state.bank[BANK_NONE][id - 8];
-    }
-
-    if (likely(!cpu_mode_is_invalid || !is_banked)) {
-      result |= state.reg[id];
     }
 
     return result;
@@ -141,20 +165,22 @@ private:
   void SetReg(int id, u32 value) {
     bool is_banked = id >= 8 && id != 15;
 
-    if (unlikely(ldm_usermode_conflict && is_banked)) {
+    if(unlikely(ldm_usermode_conflict && is_banked)) {
+      // This array holds the current user/sys bank value only if the CPU wasn't in user or system mode all along during the user mode LDM instruction.
+      // We take care in the LDM implementation that this branch is only taken if that was the case.
       state.bank[BANK_NONE][id - 8] = value;
     }
 
-    if (likely(!cpu_mode_is_invalid || !is_banked)) {
+    if(likely(!cpu_mode_is_invalid || !is_banked)) {
       state.reg[id] = value;
     }
   }
 
   auto GetSPSR() -> StatusRegister {
     // CPSR/SPSR bit4 is forced to one on the ARM7TDMI:
-    u32 spsr = 0x00000010;
+    u32 spsr = p_spsr->v | 0x00000010u;
 
-    if (unlikely(ldm_usermode_conflict)) {
+    if(unlikely(ldm_usermode_conflict)) {
       /* TODO: current theory is that the value gets OR'd with CPSR,
        * because in user and system mode SPSR reads return the CPSR value.
        * But this needs to be confirmed.
@@ -162,25 +188,21 @@ private:
       spsr |= state.cpsr.v;
     }
 
-    if (likely(!cpu_mode_is_invalid)) {
-      spsr |= p_spsr->v;
-    }
-
     return StatusRegister{spsr};
   }
 
   void SignalIRQ() {
-    if (latch_irq_disable) {
+    if(latch_irq_disable) {
       return;
     }
 
     // Prefetch the next instruction
     // The result will be discarded because we flush the pipeline.
     // But this is important for timing nonetheless.
-    if (state.cpsr.f.thumb) {
-      ReadHalf(state.r15 & ~1, pipe.fetch_type);
+    if(state.cpsr.f.thumb) {
+      ReadHalf(state.r15 & ~1, pipe.access);
     } else {
-      ReadWord(state.r15 & ~3, pipe.fetch_type);
+      ReadWord(state.r15 & ~3, pipe.access);
     }
 
     // Save current program status register.
@@ -191,7 +213,7 @@ private:
     state.cpsr.f.mask_irq = 1;
 
     // Save current program counter and disable Thumb.
-    if (state.cpsr.f.thumb) {
+    if(state.cpsr.f.thumb) {
       state.cpsr.f.thumb = 0;
       SetReg(14, state.r15);
     } else {
@@ -204,31 +226,31 @@ private:
   }
 
   bool CheckCondition(Condition condition) {
-    if (condition == COND_AL)
+    if(condition == COND_AL)
       return true;
     return s_condition_lut[(static_cast<int>(condition) << 4) | (state.cpsr.v >> 28)];
   }
 
   void ReloadPipeline16() {
-    pipe.opcode[0] = bus.ReadHalf(state.r15 + 0, Access::Nonsequential);
-    pipe.opcode[1] = bus.ReadHalf(state.r15 + 2, Access::Sequential);
-    pipe.fetch_type = Access::Sequential;
+    pipe.opcode[0] = bus.ReadHalf(state.r15 + 0, Access::Code | Access::Nonsequential);
+    pipe.opcode[1] = bus.ReadHalf(state.r15 + 2, Access::Code | Access::Sequential);
+    pipe.access = Access::Code | Access::Sequential;
     state.r15 += 4;
 
     latch_irq_disable = state.cpsr.f.mask_irq;
   }
 
   void ReloadPipeline32() {
-    pipe.opcode[0] = bus.ReadWord(state.r15 + 0, Access::Nonsequential);
-    pipe.opcode[1] = bus.ReadWord(state.r15 + 4, Access::Sequential);
-    pipe.fetch_type = Access::Sequential;
+    pipe.opcode[0] = bus.ReadWord(state.r15 + 0, Access::Code | Access::Nonsequential);
+    pipe.opcode[1] = bus.ReadWord(state.r15 + 4, Access::Code | Access::Sequential);
+    pipe.access = Access::Code | Access::Sequential;
     state.r15 += 8;
 
     latch_irq_disable = state.cpsr.f.mask_irq;
   }
 
   auto GetRegisterBankByMode(Mode mode) -> Bank {
-    switch (mode) {
+    switch(mode) {
       case MODE_USR:
       case MODE_SYS:
         return BANK_NONE;
@@ -247,6 +269,10 @@ private:
     return BANK_INVALID;
   }
 
+  void ClearLDMUsermodeConflictFlag() {
+    ldm_usermode_conflict = false;
+  }
+
   #include "handlers/arithmetic.inl"
   #include "handlers/handler16.inl"
   #include "handlers/handler32.inl"
@@ -259,7 +285,7 @@ private:
   bool cpu_mode_is_invalid;
 
   struct Pipeline {
-    Access fetch_type;
+    int access;
     u32 opcode[2];
   } pipe;
 

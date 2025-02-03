@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -11,6 +11,8 @@
 #include <nba/rom/backup/backup.hpp>
 #include <platform/game_db.hpp>
 #include <string>
+
+namespace fs = std::filesystem;
 
 namespace nba {
 
@@ -24,20 +26,23 @@ struct ROMLoader {
 
   static auto Load(
     std::unique_ptr<CoreBase>& core,
-    std::string path,
+    fs::path const& path,
     Config::BackupType backup_type = Config::BackupType::Detect,
-    bool force_rtc = true
+    GPIODeviceType force_gpio = GPIODeviceType::None
   ) -> Result;
 
   static auto Load(
     std::unique_ptr<CoreBase>& core,
-    std::string rom_path,
-    std::string save_path,
+    fs::path const& rom_path,
+    fs::path const& save_path,
     Config::BackupType backup_type = Config::BackupType::Detect,
-    bool force_rtc = true
+    GPIODeviceType force_gpio = GPIODeviceType::None
   ) -> Result;
 
 private:
+  static auto ReadFile(fs::path const& path, std::vector<u8>& file_data) -> Result;
+  static auto ReadFileFromArchive(fs::path const& path, std::vector<u8>& file_data) -> Result;
+
   static auto GetGameInfo(
     std::vector<u8>& file_data
   ) -> GameInfo;
@@ -47,7 +52,8 @@ private:
   ) -> Config::BackupType;
 
   static auto CreateBackup(
-    std::string save_path,
+    std::unique_ptr<CoreBase>& core,
+    fs::path const& save_path,
     Config::BackupType backup_type
   ) -> std::unique_ptr<Backup>;
 

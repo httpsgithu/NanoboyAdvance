@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -18,7 +18,7 @@ struct CubicResampler : Resampler<T> {
   }
   
   void Write(T const& input) final {
-    while (resample_phase < 1.0) {
+    while(resample_phase < 1.0) {
       // http://paulbourke.net/miscellaneous/interpolation/
       T a0, a1, a2, a3;
       float mu, mu2;

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -8,6 +8,7 @@
 #pragma once
 
 #include <array>
+#include <fmt/color.h>
 #include <fmt/format.h>
 #include <string_view>
 #include <utility>
@@ -36,25 +37,44 @@ namespace detail {
 } // namespace nba::detail
 
 template<Level level, typename... Args>
-inline void Log(std::string_view format, Args... args) {
+inline void Log(std::string_view format, Args&&... args) {
   if constexpr((detail::kLogMask & level) != 0) {
+    fmt::text_style style = {};
     char const* prefix = "[?]";
 
-    if constexpr(level == Trace) prefix = "\e[36m[T]";
-    if constexpr(level == Debug) prefix = "\e[34m[D]";
-    if constexpr(level ==  Info) prefix = "\e[37m[I]";
-    if constexpr(level ==  Warn) prefix = "\e[33m[W]";
-    if constexpr(level == Error) prefix = "\e[35m[E]";
-    if constexpr(level == Fatal) prefix = "\e[31m[F]";
+    if constexpr(level == Trace) {
+      style = fmt::fg(fmt::terminal_color::cyan);
+      prefix = "[T]";
+    }
+    if constexpr(level == Debug) {
+      style = fmt::fg(fmt::terminal_color::blue);
+      prefix = "[D]";
+    }
+    if constexpr(level ==  Info) {
+      prefix = "[I]";
+    }
+    if constexpr(level ==  Warn) {
+      style = fmt::fg(fmt::terminal_color::yellow);
+      prefix = "[W]";
+    }
+    if constexpr(level == Error) {
+      style = fmt::fg(fmt::terminal_color::magenta);
+      prefix = "[E]";
+    }
+    if constexpr(level == Fatal) {
+      style = fmt::fg(fmt::terminal_color::red);
+      prefix = "[F]";
+    }
 
-    fmt::print("{} {}\n", prefix, fmt::format(format, args...));
+    const auto& style_ref = style;
+    fmt::print(style_ref, "{} {}\n", prefix, fmt::format(format, std::forward<Args>(args)...));
   }
 }
 
 template<typename... Args>
 inline void Assert(bool condition, Args... args) {
-  if (!condition) {
-    Log<Fatal>(args...);
+  if(!condition) {
+    Log<Fatal>(std::forward<Args>(args)...);
     std::exit(-1);
   }
 }

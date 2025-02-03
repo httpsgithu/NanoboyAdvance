@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -10,31 +10,29 @@
 #include <platform/loader/bios.hpp>
 #include <vector>
 
-namespace fs = std::filesystem;
-
 namespace nba {
 
 static constexpr size_t kBIOSSize = 0x4000;
 
 auto BIOSLoader::Load(
   std::unique_ptr<CoreBase>& core,
-  std::string path
+  fs::path const& path
 ) -> Result {
-  if (!fs::exists(path)) {
+  if(!fs::exists(path)) {
     return Result::CannotFindFile;
   }
 
-  if (fs::is_directory(path)) {
+  if(fs::is_directory(path)) {
     return Result::CannotOpenFile;
   }
 
   auto size = fs::file_size(path);
-  if (size != kBIOSSize) {
+  if(size != kBIOSSize) {
     return Result::BadImage;
   }
 
-  auto file_stream = std::ifstream{path, std::ios::binary};
-  if (!file_stream.good()) {
+  auto file_stream = std::ifstream{path.c_str(), std::ios::binary};
+  if(!file_stream.good()) {
     return Result::CannotOpenFile;
   }
 

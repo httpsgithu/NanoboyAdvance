@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -22,6 +22,8 @@ using s32 = std::int32_t;
 using u64 = std::uint64_t;
 using s64 = std::int64_t;
 using uint = unsigned int;
+
+using u8bool = u8;
 
 #ifdef NBA_NO_EXPORT_INT_TYPES
 } // namespace nba

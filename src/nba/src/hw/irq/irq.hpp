@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -8,8 +8,8 @@
 #pragma once
 
 #include <nba/integer.hpp>
-
-#include "scheduler.hpp"
+#include <nba/save_state.hpp>
+#include <nba/scheduler.hpp>
 
 namespace nba::core {
 
@@ -29,24 +29,21 @@ struct IRQ {
     ROM
   };
 
-  IRQ(arm::ARM7TDMI& cpu, Scheduler& scheduler)
-      : cpu(cpu)
-      , scheduler(scheduler) {
-    Reset();
-  }
+  IRQ(arm::ARM7TDMI& cpu, Scheduler& scheduler);
 
   void Reset();
-  auto Read(int offset) const -> u8;
-  void Write(int offset, u8 value);
+  auto ReadByte(int offset) const -> u8;
+  auto ReadHalf(int offset) const -> u16;
+  void WriteByte(int offset, u8  value);
+  void WriteHalf(int offset, u16 value);
   void Raise(IRQ::Source source, int channel = 0);
 
-  bool MasterEnable() const {
-    return reg_ime != 0;
+  bool ShouldUnhaltCPU() const {
+    return irq_available;
   }
 
-  bool HasServableIRQ() const {
-    return (reg_ie & reg_if) != 0;
-  }
+  void LoadState(SaveState const& state);
+  void CopyState(SaveState& state);
 
 private:
   enum Registers {
@@ -55,14 +52,22 @@ private:
     REG_IME = 4
   };
 
-  void UpdateIRQLine();
+  void OnWriteIO();
+  void UpdateIEAndIF(u64 irq_available);
+  void UpdateIRQLine(u64 irq_line);
+
+  int pending_ime;
+  u16 pending_ie;
+  u16 pending_if;
 
   int reg_ime;
   u16 reg_ie;
   u16 reg_if;
+
   arm::ARM7TDMI& cpu;
   Scheduler& scheduler;
   bool irq_line;
+  bool irq_available;
 };
 
 } // namespace nba::core

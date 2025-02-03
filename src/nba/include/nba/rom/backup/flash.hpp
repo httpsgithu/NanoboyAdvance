@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -19,11 +19,14 @@ struct FLASH : Backup {
     SIZE_128K = 1
   };
   
-  FLASH(std::string const& save_path, Size size_hint);
+  FLASH(fs::path const& save_path, Size size_hint);
   
   void Reset() final;
   auto Read (u32 address) -> u8 final;
   void Write(u32 address, u8 value) final;
+
+  void LoadState(SaveState const& state) final;
+  void CopyState(SaveState& state) final;
 
 private:
   
@@ -43,7 +46,7 @@ private:
   auto Physical(int index) -> int { return current_bank * 65536 + index; }
   
   Size size;
-  std::string save_path;
+  fs::path save_path;
   std::unique_ptr<BackupFile> file;
   
   int current_bank;

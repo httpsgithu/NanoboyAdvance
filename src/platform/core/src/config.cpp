@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -14,7 +14,7 @@
 namespace nba {
 
 void PlatformConfig::Load(std::string const& path) {
-  if (!std::filesystem::exists(path)) {
+  if(!std::filesystem::exists(path)) {
     Save(path);
     return;
   }
@@ -28,21 +28,21 @@ void PlatformConfig::Load(std::string const& path) {
     return;
   }
 
-  if (data.contains("general")) {
+  if(data.contains("general")) {
     auto general_result = toml::expect<toml::value>(data.at("general"));
 
-    if (general_result.is_ok()) {
+    if(general_result.is_ok()) {
       auto general = general_result.unwrap();
       this->bios_path = toml::find_or<std::string>(general, "bios_path", "bios.bin");
       this->skip_bios = toml::find_or<toml::boolean>(general, "bios_skip", false);
-      this->sync_to_audio = toml::find_or<toml::boolean>(general, "sync_to_audio", true);
+      this->save_folder = toml::find_or<std::string>(general, "save_folder", "");
     }
   }
 
-  if (data.contains("cartridge")) {
+  if(data.contains("cartridge")) {
     auto cartridge_result = toml::expect<toml::value>(data.at("cartridge"));
 
-    if (cartridge_result.is_ok()) {
+    if(cartridge_result.is_ok()) {
       auto cartridge = cartridge_result.unwrap();
       auto save_type = toml::find_or<std::string>(cartridge, "save_type", "detect");
 
@@ -58,32 +58,31 @@ void PlatformConfig::Load(std::string const& path) {
 
       auto match = save_types.find(save_type);
 
-      if (match == save_types.end()) {
+      if(match == save_types.end()) {
         Log<Warn>("Config: backup type '{0}' is not valid, defaulting to auto-detect.", save_type);
-        this->backup_type = Config::BackupType::Detect;
+        this->cartridge.backup_type = Config::BackupType::Detect;
       } else {
-        this->backup_type = match->second;
+        this->cartridge.backup_type = match->second;
       }
 
-      this->force_rtc = toml::find_or<toml::boolean>(cartridge, "force_rtc", false);
+      this->cartridge.force_rtc = toml::find_or<toml::boolean>(cartridge, "force_rtc", false);
+      this->cartridge.force_solar_sensor = toml::find_or<toml::boolean>(cartridge, "force_solar_sensor", false);
+      this->cartridge.solar_sensor_level = toml::find_or<int>(cartridge, "solar_sensor_level", 156);
     }
   }
 
-  if (data.contains("video")) {
+  if(data.contains("video")) {
     auto video_result = toml::expect<toml::value>(data.at("video"));
 
-    if (video_result.is_ok()) {
+    if(video_result.is_ok()) {
       auto video = video_result.unwrap();
   
-      this->video.fullscreen = toml::find_or<toml::boolean>(video, "fullscreen", false);
-      this->video.scale = toml::find_or<int>(video, "scale", 2);
-      this->video.shader.path_vs = toml::find_or<std::string>(video, "shader_vs", "");
-      this->video.shader.path_fs = toml::find_or<std::string>(video, "shader_fs", "");
-
       const std::map<std::string, Video::Filter> filters{
         { "nearest", Video::Filter::Nearest },
         { "linear",  Video::Filter::Linear  },
-        { "xbrz",    Video::Filter::xBRZ    }
+        { "sharp",   Video::Filter::Sharp   },
+        { "xbrz",    Video::Filter::xBRZ    },
+        { "lcd1x",   Video::Filter::Lcd1x   }
       };
 
       const std::map<std::string, Video::Color> color_corrections{
@@ -94,13 +93,13 @@ void PlatformConfig::Load(std::string const& path) {
 
       auto filter = toml::find_or<std::string>(video, "filter", "nearest");
       auto filter_match = filters.find(filter);
-      if (filter_match != filters.end()) {
+      if(filter_match != filters.end()) {
         this->video.filter = filter_match->second;
       }
 
       auto color_correction = toml::find_or<std::string>(video, "color_correction", "ags");
       auto color_correction_match = color_corrections.find(color_correction);
-      if (color_correction_match != color_corrections.end()) {
+      if(color_correction_match != color_corrections.end()) {
         this->video.color = color_correction_match->second;  
       }
 
@@ -108,10 +107,10 @@ void PlatformConfig::Load(std::string const& path) {
     }
   }
 
-  if (data.contains("audio")) {
+  if(data.contains("audio")) {
     auto audio_result = toml::expect<toml::value>(data.at("audio"));
 
-    if (audio_result.is_ok()) {
+    if(audio_result.is_ok()) {
       auto audio = audio_result.unwrap();
       auto resampler = toml::find_or<std::string>(audio, "resampler", "cosine");
 
@@ -125,16 +124,17 @@ void PlatformConfig::Load(std::string const& path) {
 
       auto match = resamplers.find(resampler);
 
-      if (match == resamplers.end()) {
+      if(match == resamplers.end()) {
         Log<Warn>("Config: unknown resampling algorithm: {} (defaulting to cosine).", resampler);
         this->audio.interpolation = Config::Audio::Interpolation::Cosine;
       } else {
         this->audio.interpolation = match->second;
       }
 
-      this->audio.interpolate_fifo = toml::find_or<toml::boolean>(audio, "interpolate_fifo", true);
+      this->audio.volume = toml::find_or<int>(audio, "volume", 100);
       this->audio.mp2k_hle_enable = toml::find_or<toml::boolean>(audio, "mp2k_hle_enable", false);
-      this->audio.mp2k_hle_cubic = toml::find_or<toml::boolean>(audio, "mp2k_hle_cubic", false);
+      this->audio.mp2k_hle_cubic = toml::find_or<toml::boolean>(audio, "mp2k_hle_cubic", true);
+      this->audio.mp2k_hle_force_reverb = toml::find_or<toml::boolean>(audio, "mp2k_hle_force_reverb", true);
     }
   }
 
@@ -144,7 +144,7 @@ void PlatformConfig::Load(std::string const& path) {
 void PlatformConfig::Save(std::string const& path) {
   toml::basic_value<toml::preserve_comments> data;
 
-  if (std::filesystem::exists(path)) {
+  if(std::filesystem::exists(path)) {
     try {
       data = toml::parse<toml::preserve_comments>(path);
     } catch (std::exception& ex) {
@@ -156,11 +156,11 @@ void PlatformConfig::Save(std::string const& path) {
   // General
   data["general"]["bios_path"] = this->bios_path;
   data["general"]["bios_skip"] = this->skip_bios;
-  data["general"]["sync_to_audio"] = this->sync_to_audio;
+  data["general"]["save_folder"] = this->save_folder;
 
   // Cartridge
   std::string save_type;
-  switch (this->backup_type) {
+  switch(this->cartridge.backup_type) {
     case Config::BackupType::Detect: save_type = "detect"; break;
     case Config::BackupType::None:   save_type = "none"; break;
     case Config::BackupType::SRAM:   save_type = "sram"; break;
@@ -170,35 +170,35 @@ void PlatformConfig::Save(std::string const& path) {
     case Config::BackupType::EEPROM_64: save_type = "eeprom8192"; break;
   }
   data["cartridge"]["save_type"] = save_type;
-  data["cartridge"]["force_rtc"] = this->force_rtc;
+  data["cartridge"]["force_rtc"] = this->cartridge.force_rtc;
+  data["cartridge"]["force_solar_sensor"] = this->cartridge.force_solar_sensor;
+  data["cartridge"]["solar_sensor_level"] = this->cartridge.solar_sensor_level;
 
   // Video
   std::string filter;
   std::string color_correction;
 
-  switch (this->video.filter) {
+  switch(this->video.filter) {
     case Video::Filter::Nearest: filter = "nearest"; break;
     case Video::Filter::Linear:  filter = "linear"; break;
-    case Video::Filter::xBRZ:    filter = "xbrz"; break; 
+    case Video::Filter::Sharp:   filter = "sharp"; break;
+    case Video::Filter::xBRZ:    filter = "xbrz"; break;
+    case Video::Filter::Lcd1x:   filter = "lcd1x"; break;
   }
 
-  switch (this->video.color) {
+  switch(this->video.color) {
     case Video::Color::No:    color_correction = "none"; break;
     case Video::Color::higan: color_correction = "higan"; break;
     case Video::Color::AGB:   color_correction = "agb"; break;
   }
 
-  data["video"]["fullscreen"] = this->video.fullscreen;
-  data["video"]["scale"] = this->video.scale;
-  data["video"]["shader_vs"] = this->video.shader.path_vs;
-  data["video"]["shader_fs"] = this->video.shader.path_fs;
   data["video"]["filter"] = filter;
   data["video"]["color_correction"] = color_correction;
   data["video"]["lcd_ghosting"] = this->video.lcd_ghosting;
 
   // Audio
   std::string resampler;
-  switch (this->audio.interpolation) {
+  switch(this->audio.interpolation) {
     case Config::Audio::Interpolation::Cosine: resampler = "cosine"; break;
     case Config::Audio::Interpolation::Cubic:  resampler = "cubic";  break;
     case Config::Audio::Interpolation::Sinc_64:  resampler = "sinc64"; break;
@@ -206,9 +206,10 @@ void PlatformConfig::Save(std::string const& path) {
     case Config::Audio::Interpolation::Sinc_256: resampler = "sinc256"; break;
   }
   data["audio"]["resampler"] = resampler;
-  data["audio"]["interpolate_fifo"] = this->audio.interpolate_fifo;
+  data["audio"]["volume"] = this->audio.volume;
   data["audio"]["mp2k_hle_enable"] = this->audio.mp2k_hle_enable;
   data["audio"]["mp2k_hle_cubic"] = this->audio.mp2k_hle_cubic;
+  data["audio"]["mp2k_hle_force_reverb"] = this->audio.mp2k_hle_force_reverb;
 
   SaveCustomData(data);
 

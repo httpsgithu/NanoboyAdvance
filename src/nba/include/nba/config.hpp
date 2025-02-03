@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -9,7 +9,6 @@
 
 #include <memory>
 #include <nba/device/audio_device.hpp>
-#include <nba/device/input_device.hpp>
 #include <nba/device/video_device.hpp>
 #include <nba/integer.hpp>
 #include <string>
@@ -26,7 +25,8 @@ struct Config {
     FLASH_64,
     FLASH_128,
     EEPROM_4,
-    EEPROM_64
+    EEPROM_64,
+    EEPROM_DETECT // for internal use
   };
 
   struct Audio {
@@ -37,15 +37,15 @@ struct Config {
       Sinc_64,
       Sinc_128,
       Sinc_256
-    } interpolation = Interpolation::Cosine;
+    } interpolation = Interpolation::Cubic;
 
-    bool interpolate_fifo = true;
+    int volume = 100; // between 0 and 100
     bool mp2k_hle_enable = false;
-    bool mp2k_hle_cubic = false;
+    bool mp2k_hle_cubic = true;
+    bool mp2k_hle_force_reverb = true;
   } audio;
 
   std::shared_ptr<AudioDevice> audio_dev = std::make_shared<NullAudioDevice>();
-  std::shared_ptr<InputDevice> input_dev = std::make_shared<NullInputDevice>();
   std::shared_ptr<VideoDevice> video_dev = std::make_shared<NullVideoDevice>();
 };
 
@@ -56,7 +56,7 @@ namespace std {
 using BackupType = nba::Config::BackupType;
 
 inline auto to_string(BackupType value) -> std::string {
-  switch (value) {
+  switch(value) {
     case BackupType::Detect: return "Detect";
     case BackupType::None: return "None";
     case BackupType::SRAM: return "SRAM";

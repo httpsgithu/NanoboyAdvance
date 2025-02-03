@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -21,13 +21,13 @@ public:
   }
 
   void Restart() {
-    if (length == 0) {
+    if(length == 0) {
       length = default_length;
     }
   }
 
   bool Tick() {
-    if (enabled) {
+    if(enabled) {
       return --length > 0;
     }
     return true;

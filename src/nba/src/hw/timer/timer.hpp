@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -9,20 +9,16 @@
 
 #include <algorithm>
 #include <nba/integer.hpp>
+#include <nba/save_state.hpp>
+#include <nba/scheduler.hpp>
 
 #include "hw/apu/apu.hpp"
 #include "hw/irq/irq.hpp"
-#include "scheduler.hpp"
 
 namespace nba::core {
 
 struct Timer {
-  Timer(Scheduler& scheduler, IRQ& irq, APU& apu)
-      : scheduler(scheduler)
-      , irq(irq)
-      , apu(apu) {
-    Reset();
-  }
+  Timer(Scheduler& scheduler, IRQ& irq, APU& apu);
 
   void Reset();
   auto ReadByte(int chan_id, int offset) -> u8;
@@ -31,6 +27,9 @@ struct Timer {
   void WriteByte(int chan_id, int offset, u8  value);
   void WriteHalf(int chan_id, int offset, u16 value);
   void WriteWord(int chan_id, u32 value);
+
+  void LoadState(SaveState const& state);
+  void CopyState(SaveState& state);
 
 private:
   enum Registers {
@@ -41,8 +40,12 @@ private:
   struct Channel {
     int id;
     u16 reload = 0;
-    u16 reload_latch;
     u32 counter = 0;
+
+    struct Pending {
+      u16 reload = 0;
+      u16 control = 0;
+    } pending = {};
 
     struct Control {
       int frequency = 0;
@@ -57,7 +60,6 @@ private:
     int samplerate;
     u64 timestamp_started;
     Scheduler::Event* event_overflow = nullptr;
-    std::function<void(int)> fn_overflow;
   } channels[4];
 
   Scheduler& scheduler;
@@ -70,11 +72,14 @@ private:
   auto ReadControl(Channel const& channel) -> u16;
   void WriteControl(Channel& channel, u16 value);
 
-  void RecalculateSampleRates();
+  void OnReloadWritten(u64 chan_id);
+  void OnControlWritten(u64 chan_id);
+
   auto GetCounterDeltaSinceLastUpdate(Channel const& channel) -> u32;
-  void StartChannel(Channel& channel, int cycles_late);
+  void StartChannel(Channel& channel, int cycle_offset);
   void StopChannel(Channel& channel);
-  void OnOverflow(Channel& channel);
+  void ReloadCascadeAndRequestIRQ(Channel& channel);
+  void OnOverflow(u64 chan_id);
 };
 
 } // namespace nba::core

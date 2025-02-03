@@ -1,13 +1,14 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
  */
 
 #include <nba/common/crc32.hpp>
+#include <nba/rom/gpio/rtc.hpp>
+#include <nba/rom/gpio/solar_sensor.hpp>
 
-#include "hw/rom/gpio/rtc.hpp"
 #include "core.hpp"
 
 namespace nba {
@@ -22,7 +23,7 @@ Core::Core(std::shared_ptr<Config> config)
     , apu(scheduler, dma, bus, config)
     , ppu(scheduler, irq, dma, config)
     , timer(scheduler, irq, apu)
-    , keypad(irq, config)
+    , keypad(scheduler, irq)
     , bus(scheduler, {cpu, irq, dma, apu, ppu, timer, keypad}) {
   Reset();
 }
@@ -38,14 +39,15 @@ void Core::Reset() {
   bus.Reset();
   keypad.Reset();
 
-  if (config->skip_bios) {
+  if(config->skip_bios) {
     SkipBootScreen();
   }
 
-  if (config->audio.mp2k_hle_enable) {
+  if(config->audio.mp2k_hle_enable) {
     apu.GetMP2K().UseCubicFilter() = config->audio.mp2k_hle_cubic;
+    apu.GetMP2K().ForceReverb() = config->audio.mp2k_hle_force_reverb;
     hle_audio_hook = SearchSoundMainRAM();
-    if (hle_audio_hook != 0xFFFFFFFF) {
+    if(hle_audio_hook != 0xFFFFFFFF) {
       Log<Info>("Core: detected MP2K audio mixer @ 0x{:08X}", hle_audio_hook);
     }
   } else {
@@ -61,33 +63,49 @@ void Core::Attach(ROM&& rom) {
   bus.Attach(std::move(rom));
 }
 
-auto Core::CreateRTC() -> std::unique_ptr<GPIO> {
+auto Core::CreateRTC() -> std::unique_ptr<RTC> {
   return std::make_unique<RTC>(irq);
+}
+
+auto Core::CreateSolarSensor() -> std::unique_ptr<SolarSensor> {
+  return std::make_unique<SolarSensor>();
+}
+
+void Core::SetKeyStatus(Key key, bool pressed) {
+  keypad.SetKeyStatus(key, pressed);
 }
 
 void Core::Run(int cycles) {
   using HaltControl = Bus::Hardware::HaltControl;
 
-  auto limit = scheduler.GetTimestampNow() + cycles;
+  const auto limit = scheduler.GetTimestampNow() + cycles;
 
-  while (scheduler.GetTimestampNow() < limit) {
-    if (bus.hw.haltcnt == HaltControl::Halt && irq.HasServableIRQ()) {
-      bus.Idle();
-      bus.hw.haltcnt = HaltControl::Run;
-    }
+  while(scheduler.GetTimestampNow() < limit) {
+    if(bus.hw.haltcnt == HaltControl::Run) {
+      if(cpu.state.r15 == hle_audio_hook) {
+        const u32  sound_info_addr = *bus.GetHostAddress<u32>(0x03007FF0);
+        const auto sound_info = bus.GetHostAddress<MP2K::SoundInfo>(sound_info_addr);
 
-    if (bus.hw.haltcnt == HaltControl::Run) {
-      if (cpu.state.r15 == hle_audio_hook) {
-        // TODO: cache the SoundInfo pointer once we have it?
-        apu.GetMP2K().SoundMainRAM(
-          *bus.GetHostAddress<MP2K::SoundInfo>(
-            *bus.GetHostAddress<u32>(0x0300'7FF0)
-          )
-        );
+        if(sound_info != nullptr) {
+          apu.GetMP2K().SoundMainRAM(*sound_info);
+        }
       }
+
       cpu.Run();
     } else {
-      bus.Step(scheduler.GetRemainingCycleCount());
+      while(scheduler.GetTimestampNow() < limit && !irq.ShouldUnhaltCPU()) {
+        if(dma.IsRunning()) {
+          dma.Run();
+          if(irq.ShouldUnhaltCPU()) continue; // can become true during the DMA
+        }
+
+        bus.Step(scheduler.GetRemainingCycleCount());
+      }
+
+      if(irq.ShouldUnhaltCPU()) {
+        bus.Step(1);
+        bus.hw.haltcnt = HaltControl::Run;
+      }
     }
   }
 }
@@ -106,21 +124,21 @@ auto Core::SearchSoundMainRAM() -> u32 {
 
   auto& rom = bus.memory.rom.GetRawROM();
 
-  if (rom.size() < kSoundMainLength) {
+  if(rom.size() < kSoundMainLength) {
     return 0xFFFFFFFF;
   }
 
   u32 address_max = rom.size() - kSoundMainLength;
 
-  for (u32 address = 0; address <= address_max; address += sizeof(u16)) {
+  for(u32 address = 0; address <= address_max; address += sizeof(u16)) {
     auto crc = crc32(&rom[address], kSoundMainLength);
 
-    if (crc == kSoundMainCRC32) {
+    if(crc == kSoundMainCRC32) {
       /* We have found SoundMain().
        * The pointer to SoundMainRAM() is stored at offset 0x74.
        */
       address = read<u32>(rom.data(), address + 0x74);
-      if (address & 1) {
+      if(address & 1) {
         address &= ~1;
         address += sizeof(u16) * 2;
       } else {
@@ -132,6 +150,46 @@ auto Core::SearchSoundMainRAM() -> u32 {
   }
 
   return 0xFFFFFFFF;
+}
+
+auto Core::GetROM() -> ROM& {
+  return bus.memory.rom;
+}
+
+auto Core::GetPRAM() -> u8* {
+  return ppu.GetPRAM();
+}
+
+auto Core::GetVRAM() -> u8* {
+  return ppu.GetVRAM();
+}
+
+auto Core::GetOAM() -> u8* {
+  return ppu.GetOAM();
+}
+
+auto Core::PeekByteIO(u32 address) -> u8  {
+  return bus.hw.ReadByte(address);
+}
+
+auto Core::PeekHalfIO(u32 address) -> u16 {
+  return bus.hw.ReadHalf(address);
+}
+
+auto Core::PeekWordIO(u32 address) -> u32 {
+  return bus.hw.ReadWord(address);
+}
+
+auto Core::GetBGHOFS(int id) -> u16 {
+  return ppu.mmio.bghofs[id];
+}
+
+auto Core::GetBGVOFS(int id) -> u16 {
+  return ppu.mmio.bgvofs[id];
+}
+
+Scheduler& Core::GetScheduler() {
+  return scheduler;
 }
 
 } // namespace nba::core

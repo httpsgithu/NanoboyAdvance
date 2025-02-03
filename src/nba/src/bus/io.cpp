@@ -1,9 +1,11 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
  */
+
+#include <cstdio>
 
 #include "arm/arm7tdmi.hpp"
 #include "bus/bus.hpp"
@@ -15,10 +17,12 @@ auto Bus::Hardware::ReadByte(u32 address) ->  u8 {
   auto& apu_io = apu.mmio;
   auto& ppu_io = ppu.mmio;
 
-  switch (address) {
+  switch(address) {
     // PPU
     case DISPCNT+0:  return ppu_io.dispcnt.Read(0);
     case DISPCNT+1:  return ppu_io.dispcnt.Read(1);
+    case GREENSWAP+0: return ppu_io.greenswap;
+    case GREENSWAP+1: return 0;
     case DISPSTAT+0: return ppu_io.dispstat.Read(0);
     case DISPSTAT+1: return ppu_io.dispstat.Read(1);
     case VCOUNT+0:   return ppu_io.vcount & 0xFF;
@@ -141,8 +145,17 @@ auto Bus::Hardware::ReadByte(u32 address) ->  u8 {
     case TM3CNT_H+1: return 0;
 
     // Serial communication
+    // @todo: implement sensible read/write behaviour for the remaining registers.
+    case SIOCNT+0: return (u8)(siocnt >> 0);
+    case SIOCNT+1: return (u8)(siocnt >> 8);
     case RCNT+0: return rcnt[0];
     case RCNT+1: return rcnt[1];
+    case RCNT+2:
+    case RCNT+3: return 0;
+    case 0x04000142:
+    case 0x04000143: return 0;
+    case 0x0400015A:
+    case 0x0400015B: return 0;
 
     // Keypad
     case KEYINPUT+0: return keypad.input.ReadByte(0);
@@ -151,11 +164,11 @@ auto Bus::Hardware::ReadByte(u32 address) ->  u8 {
     case KEYCNT+1:   return keypad.control.ReadByte(1);
 
     // IRQ controller
-    case IE+0:  return irq.Read(0);
-    case IE+1:  return irq.Read(1);
-    case IF+0:  return irq.Read(2);
-    case IF+1:  return irq.Read(3);
-    case IME+0: return irq.Read(4);
+    case IE+0:  return irq.ReadByte(0);
+    case IE+1:  return irq.ReadByte(1);
+    case IF+0:  return irq.ReadByte(2);
+    case IF+1:  return irq.ReadByte(3);
+    case IME+0: return irq.ReadByte(4);
     case IME+1:
     case IME+2:
     case IME+3: return 0;
@@ -178,13 +191,20 @@ auto Bus::Hardware::ReadByte(u32 address) ->  u8 {
     case WAITCNT+2:
     case WAITCNT+3: return 0;
     case POSTFLG:   return postflg;
+    case HALTCNT:   return 0;
+    case 0x04000302: 
+    case 0x04000303: return 0;
+
+    case MGBA_LOG_ENABLE+0: return (u8)(mgba_log.enable >> 0);
+    case MGBA_LOG_ENABLE+1: return (u8)(mgba_log.enable >> 8);
   }
 
   return bus->ReadOpenBus(address);
 }
 
 auto Bus::Hardware::ReadHalf(u32 address) -> u16 {
-  switch (address) {
+  switch(address) {
+    // Timer 0 - 3
     case TM0CNT_L: return timer.ReadHalf(0, 0);
     case TM0CNT_H: return timer.ReadHalf(0, 2);
     case TM1CNT_L: return timer.ReadHalf(1, 0);
@@ -193,33 +213,39 @@ auto Bus::Hardware::ReadHalf(u32 address) -> u16 {
     case TM2CNT_H: return timer.ReadHalf(2, 2);
     case TM3CNT_L: return timer.ReadHalf(3, 0);
     case TM3CNT_H: return timer.ReadHalf(3, 2);
+
+    // IRQ controller
+    case IE:  return irq.ReadHalf(0);
+    case IF:  return irq.ReadHalf(2);
+    case IME: return irq.ReadHalf(4);
   }
 
   return ReadByte(address) | (ReadByte(address + 1) << 8);
 }
 
 auto Bus::Hardware::ReadWord(u32 address) -> u32 {
-  switch (address) {
+  switch(address) {
     case TM0CNT_L: return timer.ReadWord(0);
     case TM1CNT_L: return timer.ReadWord(1);
     case TM2CNT_L: return timer.ReadWord(2);
     case TM3CNT_L: return timer.ReadWord(3);
   }
 
-  return ReadByte(address) |
-        (ReadByte(address + 1) <<  8) |
-        (ReadByte(address + 2) << 16) |
-        (ReadByte(address + 3) << 24);
+  return ReadHalf(address) | (ReadHalf(address + 2) << 16);
 }
 
 void Bus::Hardware::WriteByte(u32 address,  u8 value) {
   auto& apu_io = apu.mmio;
   auto& ppu_io = ppu.mmio;
 
-  switch (address) {
+  const bool apu_enable = apu_io.soundcnt.master_enable;
+
+  switch(address) {
     // PPU
     case DISPCNT+0:  ppu_io.dispcnt.Write(0, value); break;
     case DISPCNT+1:  ppu_io.dispcnt.Write(1, value); break;
+    case GREENSWAP+0: ppu_io.greenswap = value & 1; break;
+    case GREENSWAP+1: break;
     case DISPSTAT+0: ppu_io.dispstat.Write(0, value); break;
     case DISPSTAT+1: ppu_io.dispstat.Write(1, value); break;
     case BG0CNT+0:   ppu_io.bgcnt[0].Write(0, value); break;
@@ -413,26 +439,26 @@ void Bus::Hardware::WriteByte(u32 address,  u8 value) {
     case DMA3CNT_H+1: dma.Write(3, 11, value); break;
 
     // Sound
-    case SOUND1CNT_L:   apu_io.psg1.Write(0, value); break;
-    case SOUND1CNT_L+1: apu_io.psg1.Write(1, value); break;
-    case SOUND1CNT_H:   apu_io.psg1.Write(2, value); break;
-    case SOUND1CNT_H+1: apu_io.psg1.Write(3, value); break;
-    case SOUND1CNT_X:   apu_io.psg1.Write(4, value); break;
-    case SOUND1CNT_X+1: apu_io.psg1.Write(5, value); break;
-    case SOUND2CNT_L:   apu_io.psg2.Write(2, value); break;
-    case SOUND2CNT_L+1: apu_io.psg2.Write(3, value); break;
-    case SOUND2CNT_H:   apu_io.psg2.Write(4, value); break;
-    case SOUND2CNT_H+1: apu_io.psg2.Write(5, value); break;
-    case SOUND3CNT_L:   apu_io.psg3.Write(0, value); break;
-    case SOUND3CNT_L+1: apu_io.psg3.Write(1, value); break;
-    case SOUND3CNT_H:   apu_io.psg3.Write(2, value); break;
-    case SOUND3CNT_H+1: apu_io.psg3.Write(3, value); break;
-    case SOUND3CNT_X:   apu_io.psg3.Write(4, value); break;
-    case SOUND3CNT_X+1: apu_io.psg3.Write(5, value); break;
-    case SOUND4CNT_L:   apu_io.psg4.Write(0, value); break;
-    case SOUND4CNT_L+1: apu_io.psg4.Write(1, value); break;
-    case SOUND4CNT_H:   apu_io.psg4.Write(4, value); break;
-    case SOUND4CNT_H+1: apu_io.psg4.Write(5, value); break;
+    case SOUND1CNT_L:   if(apu_enable) apu_io.psg1.Write(0, value); break;
+    case SOUND1CNT_L+1: if(apu_enable) apu_io.psg1.Write(1, value); break;
+    case SOUND1CNT_H:   if(apu_enable) apu_io.psg1.Write(2, value); break;
+    case SOUND1CNT_H+1: if(apu_enable) apu_io.psg1.Write(3, value); break;
+    case SOUND1CNT_X:   if(apu_enable) apu_io.psg1.Write(4, value); break;
+    case SOUND1CNT_X+1: if(apu_enable) apu_io.psg1.Write(5, value); break;
+    case SOUND2CNT_L:   if(apu_enable) apu_io.psg2.Write(2, value); break;
+    case SOUND2CNT_L+1: if(apu_enable) apu_io.psg2.Write(3, value); break;
+    case SOUND2CNT_H:   if(apu_enable) apu_io.psg2.Write(4, value); break;
+    case SOUND2CNT_H+1: if(apu_enable) apu_io.psg2.Write(5, value); break;
+    case SOUND3CNT_L:   if(apu_enable) apu_io.psg3.Write(0, value); break;
+    case SOUND3CNT_L+1: if(apu_enable) apu_io.psg3.Write(1, value); break;
+    case SOUND3CNT_H:   if(apu_enable) apu_io.psg3.Write(2, value); break;
+    case SOUND3CNT_H+1: if(apu_enable) apu_io.psg3.Write(3, value); break;
+    case SOUND3CNT_X:   if(apu_enable) apu_io.psg3.Write(4, value); break;
+    case SOUND3CNT_X+1: if(apu_enable) apu_io.psg3.Write(5, value); break;
+    case SOUND4CNT_L:   if(apu_enable) apu_io.psg4.Write(0, value); break;
+    case SOUND4CNT_L+1: if(apu_enable) apu_io.psg4.Write(1, value); break;
+    case SOUND4CNT_H:   if(apu_enable) apu_io.psg4.Write(4, value); break;
+    case SOUND4CNT_H+1: if(apu_enable) apu_io.psg4.Write(5, value); break;
     case WAVE_RAM+0:
     case WAVE_RAM+1:
     case WAVE_RAM+2:
@@ -452,16 +478,16 @@ void Bus::Hardware::WriteByte(u32 address,  u8 value) {
       apu_io.psg3.WriteSample(address & 0xF, value);
       break;
     }
-    case FIFO_A:   apu_io.fifo[0].WriteByte(0, value); break;
-    case FIFO_A+1: apu_io.fifo[0].WriteByte(1, value); break;
-    case FIFO_A+2: apu_io.fifo[0].WriteByte(2, value); break;
-    case FIFO_A+3: apu_io.fifo[0].WriteByte(3, value); break;
-    case FIFO_B:   apu_io.fifo[1].WriteByte(0, value); break;
-    case FIFO_B+1: apu_io.fifo[1].WriteByte(1, value); break;
-    case FIFO_B+2: apu_io.fifo[1].WriteByte(2, value); break;
-    case FIFO_B+3: apu_io.fifo[1].WriteByte(3, value); break;
-    case SOUNDCNT_L:   apu_io.soundcnt.Write(0, value); break;
-    case SOUNDCNT_L+1: apu_io.soundcnt.Write(1, value); break;
+    case FIFO_A:   if(apu_enable) apu_io.fifo[0].WriteByte(0, value); break;
+    case FIFO_A+1: if(apu_enable) apu_io.fifo[0].WriteByte(1, value); break;
+    case FIFO_A+2: if(apu_enable) apu_io.fifo[0].WriteByte(2, value); break;
+    case FIFO_A+3: if(apu_enable) apu_io.fifo[0].WriteByte(3, value); break;
+    case FIFO_B:   if(apu_enable) apu_io.fifo[1].WriteByte(0, value); break;
+    case FIFO_B+1: if(apu_enable) apu_io.fifo[1].WriteByte(1, value); break;
+    case FIFO_B+2: if(apu_enable) apu_io.fifo[1].WriteByte(2, value); break;
+    case FIFO_B+3: if(apu_enable) apu_io.fifo[1].WriteByte(3, value); break;
+    case SOUNDCNT_L:   if(apu_enable) apu_io.soundcnt.Write(0, value); break;
+    case SOUNDCNT_L+1: if(apu_enable) apu_io.soundcnt.Write(1, value); break;
     case SOUNDCNT_H:   apu_io.soundcnt.Write(2, value); break;
     case SOUNDCNT_H+1: apu_io.soundcnt.Write(3, value); break;
     case SOUNDCNT_X:   apu_io.soundcnt.Write(4, value); break;
@@ -483,12 +509,8 @@ void Bus::Hardware::WriteByte(u32 address,  u8 value) {
     case TM3CNT_H:   timer.WriteByte(3, 2, value); break;
 
     // Serial communication
-    case SIOCNT: {
-      if (value & 0x80) {
-        irq.Raise(IRQ::Source::Serial);
-      }
-      break;
-    }
+    case SIOCNT+0: WriteHalf(SIOCNT, (siocnt & 0xFF00) | (value << 0)); break;
+    case SIOCNT+1: WriteHalf(SIOCNT, (siocnt & 0x00FF) | (value << 8)); break;
     case RCNT+0: rcnt[0] = value; break;
     case RCNT+1: rcnt[1] = value; break;
 
@@ -497,11 +519,11 @@ void Bus::Hardware::WriteByte(u32 address,  u8 value) {
     case KEYCNT+1: keypad.control.WriteByte(1, value); break;
 
     // IRQ controller
-    case IE+0: irq.Write(0, value); break;
-    case IE+1: irq.Write(1, value); break;
-    case IF+0: irq.Write(2, value); break;
-    case IF+1: irq.Write(3, value); break;
-    case IME:  irq.Write(4, value); break;
+    case IE+0: irq.WriteByte(0, value); break;
+    case IE+1: irq.WriteByte(1, value); break;
+    case IF+0: irq.WriteByte(2, value); break;
+    case IF+1: irq.WriteByte(3, value); break;
+    case IME:  irq.WriteByte(4, value); break;
 
     // System control
     case WAITCNT+0: {
@@ -514,27 +536,38 @@ void Bus::Hardware::WriteByte(u32 address,  u8 value) {
       break;
     }
     case WAITCNT+1: {
+      const bool prefetch_old = waitcnt.prefetch;
       waitcnt.ws2[0] = (value >> 0) & 3;
       waitcnt.ws2[1] = (value >> 2) & 1;
       waitcnt.phi = (value >> 3) & 3;
       waitcnt.prefetch = (value >> 6) & 1;
+      if(prefetch_old && !waitcnt.prefetch) {
+        prefetch_buffer_was_disabled = true;
+      }
       bus->UpdateWaitStateTable();
       break;
     }
     case POSTFLG: {
-      if (cpu.state.r15 <= 0x3FFF) {
+      if(cpu.state.r15 <= 0x3FFF) {
         postflg |= value & 1;
       }
       break;
     }
     case HALTCNT: {
-      if (cpu.state.r15 <= 0x3FFF) {
-        if (value & 0x80) {
-          haltcnt = HaltControl::Stop;
+      if(cpu.state.r15 <= 0x3FFF) {
+        if(value & 0x80) {
+          // haltcnt = HaltControl::Stop;
         } else {
           haltcnt = HaltControl::Halt;
-          bus->Idle();
+          bus->Step(1);
         }
+      }
+      break;
+    }
+
+    default: {
+      if(address >= MGBA_LOG_STRING_LO && address < MGBA_LOG_STRING_HI) {
+        mgba_log.message[address & 0xFF] = value;
       }
       break;
     }
@@ -544,11 +577,13 @@ void Bus::Hardware::WriteByte(u32 address,  u8 value) {
 void Bus::Hardware::WriteHalf(u32 address, u16 value) {
   auto& apu_io = apu.mmio;
 
-  switch (address) {
-    case FIFO_A+0: apu_io.fifo[0].WriteHalf(0, value); break;
-    case FIFO_A+2: apu_io.fifo[0].WriteHalf(2, value); break;
-    case FIFO_B+0: apu_io.fifo[1].WriteHalf(0, value); break;
-    case FIFO_B+2: apu_io.fifo[1].WriteHalf(2, value); break;
+  const bool apu_enable = apu_io.soundcnt.master_enable;
+
+  switch(address) {
+    case FIFO_A+0: if(apu_enable) apu_io.fifo[0].WriteHalf(0, value); break;
+    case FIFO_A+2: if(apu_enable) apu_io.fifo[0].WriteHalf(2, value); break;
+    case FIFO_B+0: if(apu_enable) apu_io.fifo[1].WriteHalf(0, value); break;
+    case FIFO_B+2: if(apu_enable) apu_io.fifo[1].WriteHalf(2, value); break;
 
     // Timers 0 - 3
     case TM0CNT_L: timer.WriteHalf(0, 0, value); break;
@@ -567,6 +602,50 @@ void Bus::Hardware::WriteHalf(u32 address, u16 value) {
       keypad.control.WriteHalf(value);
       break;
     }
+
+    // IRQ controller
+    case IE:  irq.WriteHalf(0, value); break;
+    case IF:  irq.WriteHalf(2, value); break;
+    case IME: irq.WriteByte(4, value); break;
+
+    case SIOCNT: {
+      siocnt = (siocnt & 0x80u) | (value & ~0x80u);
+
+      if(!(siocnt & 0x80u) && value & 0x80u) {
+        // bit 0 (from bit  1): internal shift clock (0 = 256 KHz, 1 = 2 MHz)
+        // bit 1 (from bit 12): transfer length (0 = 8-bit, 1 = 32-bit)
+        static const int table[4] {
+          512,
+          64,
+          2048,
+          256
+        };
+
+        siocnt |= 0x80u;
+
+        const int cycles = table[((siocnt >> 1) & 1u) | ((siocnt >> 11) & 2u)];
+
+        bus->scheduler.Add(cycles, Scheduler::EventClass::SIO_transfer_done);
+      }
+
+      break;
+    }
+
+    case MGBA_LOG_SEND: {
+      if(mgba_log.enable && (value & 0x100) != 0) {
+        fmt::print("mGBA log: {}\n", mgba_log.message.data());
+        std::fflush(stdout);
+        mgba_log.message.fill(0);
+      }
+      break;
+    }
+    case MGBA_LOG_ENABLE: {
+      if(value == 0xC0DE) {
+        mgba_log.enable = 0x1DEA;
+      }
+      break;
+    }
+
     default: {
       WriteByte(address + 0, u8(value >> 0));
       WriteByte(address + 1, u8(value >> 8));
@@ -578,21 +657,32 @@ void Bus::Hardware::WriteHalf(u32 address, u16 value) {
 void Bus::Hardware::WriteWord(u32 address, u32 value) {
   auto& apu_io = apu.mmio;
 
-  switch (address) {
-    case FIFO_A: apu_io.fifo[0].WriteWord(value); break;
-    case FIFO_B: apu_io.fifo[1].WriteWord(value); break;
+  const bool apu_enable = apu_io.soundcnt.master_enable;
+
+  switch(address) {
+    case FIFO_A: if(apu_enable) apu_io.fifo[0].WriteWord(value); break;
+    case FIFO_B: if(apu_enable) apu_io.fifo[1].WriteWord(value); break;
 
     // Timers 0 - 3
     case TM0CNT_L: timer.WriteWord(0, value); break;
     case TM1CNT_L: timer.WriteWord(1, value); break;
     case TM2CNT_L: timer.WriteWord(2, value); break;
     case TM3CNT_L: timer.WriteWord(3, value); break;
+
     default: {
       WriteHalf(address + 0, u16(value >> 0));
       WriteHalf(address + 2, u16(value >> 16));
       break;
     }
   }
+}
+
+void Bus::SIOTransferDone() {
+  if(hw.siocnt & 0x4000u) {
+    hw.irq.Raise(IRQ::Source::Serial);
+  }
+
+  hw.siocnt &= ~0x80u;
 }
 
 } // namespace nba::core

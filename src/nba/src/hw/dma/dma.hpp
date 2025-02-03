@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -9,21 +9,17 @@
 
 #include <bitset>
 #include <nba/integer.hpp>
-#include <hw/irq/irq.hpp>
+#include <nba/save_state.hpp>
+#include <nba/scheduler.hpp>
 
-#include "scheduler.hpp"
+#include "hw/irq/irq.hpp"
 
 namespace nba::core {
 
 struct Bus;
 
 struct DMA {
-  DMA(Bus& memory, IRQ& irq, Scheduler& scheduler)
-      : memory(memory)
-      , irq(irq)
-      , scheduler(scheduler) {
-    Reset();
-  }
+  DMA(Bus& bus, IRQ& irq, Scheduler& scheduler);
 
   enum class Occasion {
     HBlank,
@@ -35,12 +31,16 @@ struct DMA {
 
   void Reset();
   void Request(Occasion occasion);
-  void StopVideoXferDMA();
-  void Run();
+  void StopVideoTransferDMA();
+  bool HasVideoTransferDMA();
+  auto Run() -> int;
   auto Read (int chan_id, int offset) -> u8;
   void Write(int chan_id, int offset, u8 value);
   bool IsRunning() { return runnable_set.any(); }
   auto GetOpenBusValue() -> u32 { return latch; }
+
+  void LoadState(SaveState const& state);
+  void CopyState(SaveState& state);
 
 private:
   enum Registers {
@@ -87,18 +87,18 @@ private:
 
       /// Most recently read (half)word by this channel.
       u32 bus = 0;
-    } latch;
+    } latch = {};
 
     bool is_fifo_dma = false;
-    Scheduler::Event* startup_event = nullptr;
+    Scheduler::Event* event = nullptr;
   } channels[4];
 
   constexpr int GetUnaliasedMemoryArea(int page) {
-    if (page >= 0x09 && page <= 0x0D) {
+    if(page >= 0x09 && page <= 0x0D) {
       return 0x08;
     }
 
-    if (page == 0x0F) {
+    if(page == 0x0F) {
       return 0x0E;
     }
 
@@ -106,11 +106,15 @@ private:
   }
 
   void ScheduleDMAs(unsigned int bitset);
+  void OnActivated(u64 chan_id);
+
   void SelectNextDMA();
   void OnChannelWritten(Channel& channel, bool enable_old);
+  void AddChannelToDMASet(Channel& channel);
+  void RemoveChannelFromDMASets(Channel& channel);
   void RunChannel();
 
-  Bus& memory;
+  Bus& bus;
   IRQ& irq;
   Scheduler& scheduler;
 

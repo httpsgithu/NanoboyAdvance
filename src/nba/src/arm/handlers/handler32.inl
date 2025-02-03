@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -37,7 +37,7 @@ void ARM_DataProcessing(u32 instruction) {
   u32 op1;
   u32 op2;
 
-  pipe.fetch_type = Access::Sequential;
+  pipe.access = Access::Code | Access::Sequential;
 
   if constexpr (immediate) {
     int value = instruction & 0xFF;
@@ -60,6 +60,8 @@ void ARM_DataProcessing(u32 instruction) {
       shift = GetReg((instruction >> 8) & 0xF);
       state.r15 += 4;
       bus.Idle();
+
+      pipe.access = Access::Code | Access::Nonsequential;
     }
 
     op1 = GetReg(reg_op1);
@@ -227,7 +229,7 @@ void ARM_StatusTransfer(u32 instruction) {
     }
   }
 
-  pipe.fetch_type = Access::Sequential;
+  pipe.access = Access::Code | Access::Sequential;
   state.r15 += 4;
 }
 
@@ -238,22 +240,29 @@ void ARM_Multiply(u32 instruction) {
   int op3 = (instruction >> 12) & 0xF;
   int dst = (instruction >> 16) & 0xF;
 
-  pipe.fetch_type = Access::Nonsequential;
+  pipe.access = Access::Code | Access::Nonsequential;
   state.r15 += 4;
 
   auto lhs = GetReg(op1);
   auto rhs = GetReg(op2);
   auto result = lhs * rhs;
 
-  TickMultiply(rhs);
+  bool full = TickMultiply(rhs);
 
+  u32 accum = 0;
   if (accumulate) {
-    result += GetReg(op3);
+    accum = GetReg(op3);
+    result += accum;
     bus.Idle();
   }
 
   if (set_flags) {
     SetZeroAndSignFlag(result);
+    if (full) {
+      state.cpsr.f.c = MultiplyCarrySimple(rhs);
+    } else {
+      state.cpsr.f.c = MultiplyCarryLo(lhs, rhs, accum);
+    }
   }
 
   SetReg(dst, result);
@@ -271,9 +280,9 @@ void ARM_MultiplyLong(u32 instruction) {
   int dst_lo = (instruction >> 12) & 0xF;
   int dst_hi = (instruction >> 16) & 0xF;
 
-  s64 result;
+  u64 result;
 
-  pipe.fetch_type = Access::Nonsequential;
+  pipe.access = Access::Code | Access::Nonsequential;
   state.r15 += 4;
 
   auto lhs = GetReg(op1);
@@ -282,18 +291,21 @@ void ARM_MultiplyLong(u32 instruction) {
   if (sign_extend) {
     result = s64(s32(lhs)) * s64(s32(rhs));
   } else {
-    result = s64(u64(lhs) * u64(rhs));
+    result = u64(lhs) * u64(rhs);
   }
 
-  TickMultiply<sign_extend>(rhs);
+  bool full = TickMultiply<sign_extend>(rhs);
   bus.Idle();
 
+  u32 accum_lo = 0;
+  u32 accum_hi = 0;
   if (accumulate) {
-    s64 value = GetReg(dst_hi);
+    accum_lo = GetReg(dst_lo);
+    accum_hi = GetReg(dst_hi);
 
-    value <<= 16;
-    value <<= 16;
-    value  |= GetReg(dst_lo);
+    u64 value = accum_hi;
+    value <<= 32;
+    value |= accum_lo;
 
     result += value;
     bus.Idle();
@@ -304,6 +316,11 @@ void ARM_MultiplyLong(u32 instruction) {
   if (set_flags) {
     state.cpsr.f.n = result_hi >> 31;
     state.cpsr.f.z = result == 0;
+    if (full) {
+      state.cpsr.f.c = MultiplyCarryHi<sign_extend>(lhs, rhs, accum_hi);
+    } else {
+      state.cpsr.f.c = MultiplyCarryLo(lhs, rhs, accum_lo);
+    }
   }
 
   SetReg(dst_lo, result & 0xFFFFFFFF);
@@ -322,15 +339,15 @@ void ARM_SingleDataSwap(u32 instruction) {
 
   u32 tmp;
 
-  pipe.fetch_type = Access::Nonsequential;
+  pipe.access = Access::Code | Access::Nonsequential;
   state.r15 += 4;
 
   if (byte) {
     tmp = ReadByte(GetReg(base), Access::Nonsequential);
-    WriteByte(GetReg(base), (u8)GetReg(src), Access::Nonsequential);
+    WriteByte(GetReg(base), (u8)GetReg(src), Access::Nonsequential | Access::Lock);
   } else {
     tmp = ReadWordRotate(GetReg(base), Access::Nonsequential);
-    WriteWord(GetReg(base), GetReg(src), Access::Nonsequential);
+    WriteWord(GetReg(base), GetReg(src), Access::Nonsequential | Access::Lock);
   }
 
   bus.Idle();
@@ -350,7 +367,7 @@ void ARM_BranchAndExchange(u32 instruction) {
     state.cpsr.f.thumb = 1;
     ReloadPipeline16();
   } else {
-    state.r15 = address & ~3;
+    state.r15 = address;
     ReloadPipeline32();
   }
 }
@@ -369,7 +386,7 @@ void ARM_HalfwordSignedTransfer(u32 instruction) {
     offset = GetReg(instruction & 0xF);
   }
 
-  pipe.fetch_type = Access::Nonsequential;
+  pipe.access = Access::Code | Access::Nonsequential;
   state.r15 += 4;
 
   if constexpr (!add) {
@@ -477,7 +494,7 @@ void ARM_SingleDataTransfer(u32 instruction) {
     DoShift(opcode, offset, amount, carry, true);
   }
 
-  pipe.fetch_type = Access::Nonsequential;
+  pipe.access = Access::Code | Access::Nonsequential;
   state.r15 += 4;
 
   if constexpr(!add) {
@@ -527,7 +544,7 @@ void ARM_BlockDataTransfer(u32 instruction) {
   int base = (instruction >> 16) & 0xF;
   int list = instruction & 0xFFFF;
 
-  Mode mode;
+  Mode mode = state.cpsr.f.mode;
   bool transfer_pc = list & (1 << 15);
   int  first = 0;
   int  bytes = 0;
@@ -554,10 +571,15 @@ void ARM_BlockDataTransfer(u32 instruction) {
     bytes = 64;
   }
 
-  bool switch_mode = user_mode && (!load || !transfer_pc);
+  /**
+   * Whether the instruction is a LDM^ instruction and we need to switch to user mode.
+   * Note that we only switch to user mode if we aren't in user or system mode already.
+   * This is important for emulation of the LDM user mode register bus conflict,
+   * since the implementation of this quirk in GetReg() and SetReg() only works if the CPU isn't in user or system mode anymore.
+   */
+  const bool switch_mode = user_mode && (!load || !transfer_pc) && mode != MODE_USR && mode != MODE_SYS;
 
   if (switch_mode) {
-    mode = state.cpsr.f.mode;
     SwitchMode(MODE_USR);
   }
 
@@ -580,7 +602,7 @@ void ARM_BlockDataTransfer(u32 instruction) {
 
   auto access_type = Access::Nonsequential;
 
-  pipe.fetch_type = Access::Nonsequential;
+  pipe.access = Access::Code | Access::Nonsequential;
   state.r15 += 4;
 
   for (int i = first; i < 16; i++) {
@@ -616,13 +638,11 @@ void ARM_BlockDataTransfer(u32 instruction) {
     bus.Idle();
 
     if (switch_mode) {
-      /* During the following two cycles of a usermode LDM,
+      /* During the following two cycles of a user mode LDM,
        * register accesses will go to both the user bank and original bank.
        */
       ldm_usermode_conflict = true;
-      scheduler.Add(2, [this](int late) {
-        ldm_usermode_conflict = false;
-      });
+      scheduler.Add(2, Scheduler::EventClass::ARM_ldm_usermode_conflict);
     }
 
     if (transfer_pc) {

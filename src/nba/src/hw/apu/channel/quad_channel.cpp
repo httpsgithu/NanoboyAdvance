@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2021 fleroviux
- *
+ * Copyright (C) 2024 fleroviux
+ *<<
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
  */
@@ -9,9 +9,12 @@
 
 namespace nba::core {
 
-QuadChannel::QuadChannel(Scheduler& scheduler)
+QuadChannel::QuadChannel(Scheduler& scheduler, Scheduler::EventClass event_class)
     : BaseChannel(true, true)
-    , scheduler(scheduler) {
+    , scheduler(scheduler)
+    , event_class(event_class) {
+  scheduler.Register(event_class, this, &QuadChannel::Generate);
+
   Reset();
 }
 
@@ -21,33 +24,35 @@ void QuadChannel::Reset() {
   sample = 0;
   wave_duty = 0;
   dac_enable = false;
+  event = nullptr;
 }
 
-void QuadChannel::Generate(int cycles_late) {
-  if (!IsEnabled()) {
+void QuadChannel::Generate() {
+  if(!IsEnabled()) {
     sample = 0;
+    event = nullptr;
     return;
   }
 
-  constexpr s16 pattern[4][8] = {
+  static constexpr int pattern[4][8] = {
     { +8, -8, -8, -8, -8, -8, -8, -8 },
     { +8, +8, -8, -8, -8, -8, -8, -8 },
     { +8, +8, +8, +8, -8, -8, -8, -8 },
     { +8, +8, +8, +8, +8, +8, -8, -8 }
   };
 
-  if (dac_enable) {
+  if(dac_enable) {
     sample = s8(pattern[wave_duty][phase] * envelope.current_volume);
   } else {
     sample = 0;
   }
   phase = (phase + 1) % 8;
 
-  scheduler.Add(GetSynthesisIntervalFromFrequency(sweep.current_freq) - cycles_late, event_cb);
+  event = scheduler.Add(GetSynthesisIntervalFromFrequency(sweep.current_freq), event_class);
 }
 
 auto QuadChannel::Read(int offset) -> u8 {
-  switch (offset) {
+  switch(offset) {
     // Sweep Register
     case 0: {
       return sweep.shift |
@@ -77,7 +82,7 @@ auto QuadChannel::Read(int offset) -> u8 {
 }
 
 void QuadChannel::Write(int offset, u8 value) {
-  switch (offset) {
+  switch(offset) {
     // Sweep Register
     case 0: {
       sweep.shift = value & 7;
@@ -94,30 +99,14 @@ void QuadChannel::Write(int offset, u8 value) {
       break;
     }
     case 3: {
-      auto divider_old = envelope.divider;
-      auto direction_old = envelope.direction;
-
       envelope.divider = value & 7;
       envelope.direction = Envelope::Direction((value >> 3) & 1);
       envelope.initial_volume = value >> 4;
 
       dac_enable = (value >> 3) != 0;
-      if (!dac_enable) {
+      if(!dac_enable) {
         Disable();
       }
-
-      // Handle envelope "Zombie" mode:
-      // https://gist.github.com/drhelius/3652407#file-game-boy-sound-operation-L491
-      // TODO: what is the exact behavior on AGB systems?
-      if (divider_old == 0 && envelope.active) {
-        envelope.current_volume++;
-      } else if (direction_old == Envelope::Direction::Decrement) {
-        envelope.current_volume += 2;
-      }
-      if (direction_old != envelope.direction) {
-        envelope.current_volume = 16 - envelope.current_volume;
-      }
-      envelope.current_volume &= 15;
       break;
     }
 
@@ -132,10 +121,12 @@ void QuadChannel::Write(int offset, u8 value) {
       sweep.current_freq = sweep.initial_freq;
       length.enabled = value & 0x40;
 
-      if (dac_enable && (value & 0x80)) {
-        if (!IsEnabled()) {
-          // TODO: properly align event to system clock.
-          scheduler.Add(GetSynthesisIntervalFromFrequency(sweep.current_freq), event_cb);
+      if(dac_enable && (value & 0x80)) {
+        if(!IsEnabled()) {
+          if(event) {
+            scheduler.Cancel(event);
+          }
+          event = scheduler.Add(GetSynthesisIntervalFromFrequency(sweep.current_freq), event_class);
         }
         phase = 0;
         Restart();

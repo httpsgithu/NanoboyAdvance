@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -28,8 +28,8 @@ enum Bank {
   BANK_ABT  = 3,
   BANK_IRQ  = 4,
   BANK_UND  = 5,
+  BANK_INVALID = 6,
   BANK_COUNT,
-  BANK_INVALID
 };
 
 enum Condition {
@@ -114,10 +114,10 @@ struct RegisterFile {
   RegisterFile() { Reset(); }
   
   void Reset() {
-    for (int i = 0; i < 16; i++) reg[i] = 0;
+    for(int i = 0; i < 16; i++) reg[i] = 0;
 
-    for (int i = 0; i < BANK_COUNT; i++) {
-      for (int j = 0; j < 7; j++)
+    for(int i = 0; i < BANK_COUNT; i++) {
+      for(int j = 0; j < 7; j++)
         bank[i][j] = 0;
       spsr[i].v = 0;
     }

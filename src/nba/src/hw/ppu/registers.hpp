@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -14,6 +14,8 @@ namespace nba::core {
 class PPU;
 
 struct DisplayControl {
+  u16 hword;
+
   int mode;
   int cgb_mode;
   int frame;
@@ -25,6 +27,9 @@ struct DisplayControl {
   void Reset();
   auto Read(int address) -> u8;
   void Write(int address, u8 value);
+
+  auto ReadHalf() -> u16;
+  void WriteHalf(u16 value);
 
   PPU* ppu = nullptr;
 };
@@ -41,6 +46,9 @@ struct DisplayStatus {
   void Reset();
   auto Read(int address) -> u8;
   void Write(int address, u8 value);
+
+  auto ReadHalf() -> u16;
+  void WriteHalf(u16 value);
 
   PPU* ppu = nullptr;
 };
@@ -61,6 +69,9 @@ struct BackgroundControl {
   auto Read(int address) -> u8;
   void Write(int address, u8 value);
 
+  auto ReadHalf() -> u16;
+  void WriteHalf(u16 value);
+
 private:
   int id;
 };
@@ -68,7 +79,8 @@ private:
 struct ReferencePoint {
   s32 initial;
   s32 _current;
-  
+  bool written;
+
   void Reset();
   void Write(int address, u8 value);
 };
@@ -86,15 +98,20 @@ struct BlendControl {
   void Reset();
   auto Read(int address) -> u8;
   void Write(int address, u8 value);
+
+  auto ReadHalf() -> u16;
+  void WriteHalf(u16 value);
 };
 
 struct WindowRange {
   int min;
   int max;
-  bool _changed;
 
   void Reset();
   void Write(int address, u8 value);
+
+  auto ReadHalf() -> u16;
+  void WriteHalf(u16 value);
 };
 
 struct WindowLayerSelect {
@@ -103,6 +120,9 @@ struct WindowLayerSelect {
   void Reset();
   auto Read(int offset) -> u8;
   void Write(int offset, u8 value);
+
+  auto ReadHalf() -> u16;
+  void WriteHalf(u16 value);
 };
 
 struct Mosaic {

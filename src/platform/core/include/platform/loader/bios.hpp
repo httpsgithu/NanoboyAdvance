@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -7,8 +7,11 @@
 
 #pragma once
 
+#include <filesystem>
 #include <nba/core.hpp>
 #include <string>
+
+namespace fs = std::filesystem;
 
 namespace nba {
 
@@ -22,7 +25,7 @@ struct BIOSLoader {
 
   static auto Load(
     std::unique_ptr<CoreBase>& core,
-    std::string path
+    fs::path const& path
   ) -> Result;
 };
 

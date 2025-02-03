@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -10,6 +10,8 @@
 #include <nba/common/dsp/resampler.hpp>
 #include <nba/common/dsp/ring_buffer.hpp>
 #include <nba/config.hpp>
+#include <nba/save_state.hpp>
+#include <nba/scheduler.hpp>
 #include <mutex>
 
 #include "hw/apu/channel/quad_channel.hpp"
@@ -19,9 +21,11 @@
 #include "hw/apu/hle/mp2k.hpp"
 #include "hw/apu/registers.hpp"
 #include "hw/dma/dma.hpp"
-#include "scheduler.hpp"
 
 namespace nba::core {
+
+// See callback.cpp for implementation
+void AudioCallback(struct APU* apu, s16* stream, int byte_len);
 
 struct APU {
   APU(
@@ -35,12 +39,15 @@ struct APU {
 
   void Reset();
   auto GetMP2K() -> MP2K& { return mp2k; }
-  void OnTimerOverflow(int timer_id, int times, int samplerate);
+  void OnTimerOverflow(int timer_id, int times);
+
+  void LoadState(SaveState const& state);
+  void CopyState(SaveState& state);
 
   struct MMIO {
     MMIO(Scheduler& scheduler)
-        : psg1(scheduler)
-        , psg2(scheduler)
+        : psg1(scheduler, Scheduler::EventClass::APU_PSG1_generate)
+        , psg2(scheduler, Scheduler::EventClass::APU_PSG2_generate)
         , psg3(scheduler)
         , psg4(scheduler, bias) {
     }
@@ -66,13 +73,12 @@ struct APU {
   std::unique_ptr<StereoResampler<float>> resampler;
 
 private:
-  void StepMixer(int cycles_late);
-  void StepSequencer(int cycles_late);
+  friend void AudioCallback(APU* apu, s16* stream, int byte_len);
+
+  void StepMixer();
+  void StepSequencer();
 
   s8 latch[2];
-  std::shared_ptr<RingBuffer<float>> fifo_buffer[2];
-  std::unique_ptr<Resampler<float>> fifo_resampler[2];
-  int fifo_samplerate[2];
 
   Scheduler& scheduler;
   DMA& dma;

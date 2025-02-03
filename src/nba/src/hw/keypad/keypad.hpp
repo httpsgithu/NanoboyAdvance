@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 fleroviux
+ * Copyright (C) 2024 fleroviux
  *
  * Licensed under GPLv3 or any later version.
  * Refer to the included LICENSE file.
@@ -7,7 +7,9 @@
 
 #pragma once
 
-#include <nba/config.hpp>
+#include <nba/core.hpp>
+#include <nba/save_state.hpp>
+#include <nba/scheduler.hpp>
 #include <memory>
 
 #include "hw/irq/irq.hpp"
@@ -15,12 +17,15 @@
 namespace nba::core {
 
 struct KeyPad {
-  KeyPad(IRQ& irq, std::shared_ptr<Config> config);
+  KeyPad(Scheduler& scheduler, IRQ& irq);
 
   void Reset();
+  void SetKeyStatus(Key key, bool pressed);
 
   struct KeyInput {
     u16 value = 0x3FF;
+
+    KeyPad* keypad;
 
     auto ReadByte(uint offset) -> u8;
   } input;
@@ -41,14 +46,14 @@ struct KeyPad {
     void WriteHalf(u16 value);
   } control;
 
-private:
-  using Key = InputDevice::Key;
+  void LoadState(SaveState const& state);
+  void CopyState(SaveState& state);
 
-  void UpdateInput();
+private:
   void UpdateIRQ();
 
+  Scheduler& scheduler;
   IRQ& irq;
-  std::shared_ptr<Config> config;
 };
 
 } // namespace nba::core
